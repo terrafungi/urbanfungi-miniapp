@@ -107,6 +107,10 @@ export default function Page() {
     }
   }
 
+  const webapp = getWebApp();
+  const user = webapp?.initDataUnsafe?.user;
+  const initDataLen = (webapp?.initData || "").length;
+
   return (
     <div
       style={{
@@ -118,6 +122,14 @@ export default function Page() {
     >
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <h2 style={{ margin: 0 }}>🍄 UrbanFungi — Boutique</h2>
+         {!user?.id && (
+        <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: "1px solid #f3c", background: "#fff0f6" }}>
+          <b>⚠️ Mode non-WebApp</b><br />
+          Telegram.WebApp: {webapp ? "OK" : "ABSENT"}<br />
+          initData length: {initDataLen}<br />
+          user.id: {String(user?.id || "undefined")}
+        </div>
+      )}
         <div style={{ fontWeight: 800 }}>{total.toFixed(2)} €</div>
       </header>
 
