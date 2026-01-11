@@ -12,24 +12,29 @@ function getWebApp() {
 }
 
 export default function Page() {
-  // ✅ Telegram init (supprime le popup “pas navigateur” + plein écran)
+  // Init Telegram WebApp (si ouvert en vrai WebApp)
   useEffect(() => {
-    const webapp = getWebApp();
-    if (webapp) {
-      try {
-        webapp.ready();
-        webapp.expand();
-      } catch (e) {
-        // rien, on évite de casser l'app
-        console.warn("Telegram WebApp init failed:", e);
-      }
+    const w = getWebApp();
+    if (!w) return;
+    try {
+      w.ready();
+      w.expand();
+    } catch (e) {
+      console.warn("Telegram WebApp init failed:", e);
     }
   }, []);
 
+  // --- State
   const [cat, setCat] = useState("Tous");
-  const [cart, setCart] = useState([]); // [{id, nom, prix, qty, photo}]
+  const [cart, setCart] = useState([]); // [{id, nom, prix, qty, photo, categorie}]
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // --- Telegram context (calculé une seule fois par render)
+  const webapp = getWebApp();
+  const user = webapp?.initDataUnsafe?.user;
+  const initDataLen = (webapp?.initData || "").length;
+
+  // --- Data
   const categories = useMemo(() => {
     const set = new Set(products.map((p) => p.categorie));
     return ["Tous", ...Array.from(set)];
@@ -40,13 +45,19 @@ export default function Page() {
   }, [cat]);
 
   const total = useMemo(() => {
-    return cart.reduce((sum, i) => sum + Number(i.prix || 0) * Number(i.qty || 0), 0);
+    return cart.reduce(
+      (sum, i) => sum + Number(i.prix || 0) * Number(i.qty || 0),
+      0
+    );
   }, [cart]);
 
+  // --- Cart actions
   function add(p) {
     setCart((prev) => {
       const found = prev.find((x) => x.id === p.id);
-      if (found) return prev.map((x) => (x.id === p.id ? { ...x, qty: x.qty + 1 } : x));
+      if (found) {
+        return prev.map((x) => (x.id === p.id ? { ...x, qty: x.qty + 1 } : x));
+      }
       return [...prev, { ...p, qty: 1 }];
     });
   }
@@ -59,10 +70,8 @@ export default function Page() {
     );
   }
 
+  // --- Checkout
   async function checkout() {
-    const webapp = getWebApp();
-    const user = webapp?.initDataUnsafe?.user;
-
     if (!API_URL) return alert("API_URL manquante (NEXT_PUBLIC_API_URL).");
     if (!user?.id) return alert("Ouvre la boutique depuis Telegram (pas navigateur).");
     if (cart.length === 0) return alert("Panier vide.");
@@ -91,7 +100,6 @@ export default function Page() {
       });
 
       const data = await res.json().catch(() => ({}));
-
       if (!res.ok || !data.ok) {
         console.error("Order error:", data);
         return alert("Erreur commande. Vérifie les logs API Render.");
@@ -107,31 +115,35 @@ export default function Page() {
     }
   }
 
-  const webapp = getWebApp();
-  const user = webapp?.initDataUnsafe?.user;
-  const initDataLen = (webapp?.initData || "").length;
-
   return (
-    <div
-      style={{
-        fontFamily: "system-ui",
-        padding: 14,
-        maxWidth: 980,
-        margin: "0 auto",
-      }}
-    >
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+    <div style={{ fontFamily: "system-ui", padding: 14, maxWidth: 980, margin: "0 auto" }}>
+      {/* Header */}
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
         <h2 style={{ margin: 0 }}>🍄 UrbanFungi — Boutique</h2>
-         {!user?.id && (
-        <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: "1px solid #f3c", background: "#fff0f6" }}>
-          <b>⚠️ Mode non-WebApp</b><br />
-          Telegram.WebApp: {webapp ? "OK" : "ABSENT"}<br />
-          initData length: {initDataLen}<br />
-          user.id: {String(user?.id || "undefined")}
+        <div style={{ fontWeight: 900 }}>{total.toFixed(2)} €</div>
+      </header>
+
+      {/* Debug non-WebApp */}
+      {!user?.id && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: 10,
+            borderRadius: 12,
+            border: "1px solid #f3c",
+            background: "#fff0f6",
+            lineHeight: 1.35,
+          }}
+        >
+          <b>⚠️ Mode non-WebApp</b>
+          <div>Telegram.WebApp: {webapp ? "OK" : "ABSENT"}</div>
+          <div>initData length: {initDataLen}</div>
+          <div>user.id: {String(user?.id || "undefined")}</div>
+          <div style={{ marginTop: 6, opacity: 0.8 }}>
+            👉 Si <b>initData length = 0</b>, ton bouton ouvre en URL (pas WebApp).
+          </div>
         </div>
       )}
-        <div style={{ fontWeight: 800 }}>{total.toFixed(2)} €</div>
-      </header>
 
       {/* Catégories */}
       <div style={{ display: "flex", gap: 8, overflowX: "auto", padding: "10px 0 8px" }}>
@@ -146,7 +158,7 @@ export default function Page() {
               background: c === cat ? "#111" : "#fff",
               color: c === cat ? "#fff" : "#111",
               whiteSpace: "nowrap",
-              fontWeight: 700,
+              fontWeight: 800,
             }}
           >
             {c}
@@ -172,7 +184,7 @@ export default function Page() {
               style={{ width: "100%", height: 140, objectFit: "cover", display: "block" }}
             />
             <div style={{ padding: 10 }}>
-              <div style={{ fontWeight: 800 }}>{p.nom}</div>
+              <div style={{ fontWeight: 900 }}>{p.nom}</div>
               <div style={{ opacity: 0.7, marginTop: 2 }}>{p.categorie}</div>
               <div style={{ marginTop: 6, fontWeight: 900 }}>{p.prix} €</div>
 
@@ -229,7 +241,7 @@ export default function Page() {
                   }}
                 >
                   <div style={{ maxWidth: "65%" }}>
-                    <div style={{ fontWeight: 800 }}>{i.nom}</div>
+                    <div style={{ fontWeight: 900 }}>{i.nom}</div>
                     <div style={{ opacity: 0.7 }}>{i.prix} €</div>
                   </div>
 
@@ -237,7 +249,9 @@ export default function Page() {
                     <button onClick={() => dec(i.id)} style={{ padding: "6px 10px" }}>
                       −
                     </button>
-                    <div style={{ minWidth: 18, textAlign: "center", fontWeight: 900 }}>{i.qty}</div>
+                    <div style={{ minWidth: 18, textAlign: "center", fontWeight: 900 }}>
+                      {i.qty}
+                    </div>
                     <button onClick={() => add(i)} style={{ padding: "6px 10px" }}>
                       +
                     </button>
