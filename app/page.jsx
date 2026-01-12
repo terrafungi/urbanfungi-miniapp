@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import fallbackProducts from "./products.json";
+import fallbackData from "./products.json";
 
 /**
  * ✅ Source catalogue (PHP)
@@ -120,7 +120,18 @@ function mapApiToLegacy(api) {
 
   return out;
 }
+function normalizeFallback(data) {
+  // cas 1 : ancien products.json déjà en tableau legacy
+  if (Array.isArray(data)) return data;
 
+  // cas 2 : nouveau products.json au format API (categories + products)
+  if (Array.isArray(data?.products)) return mapApiToLegacy(data);
+
+  // cas 3 : autre structure éventuelle
+  if (Array.isArray(data?.items)) return data.items;
+
+  return [];
+}
 function calcVariantPrice(product, selected) {
   let price = Number(product?.prix || 0);
   const opts = product?.options || [];
@@ -156,7 +167,7 @@ export default function Page() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // catalogue
-  const [products, setProducts] = useState(fallbackProducts);
+  const [products, setProducts] = useState(() => normalizeFallback(fallbackData));
 
   // modal options
   const [openProduct, setOpenProduct] = useState(null);
@@ -192,16 +203,15 @@ export default function Page() {
   }, []);
 
   const categories = useMemo(() => {
-    const set = new Set(
-      (products || []).map((p) => p?.categorie).filter(Boolean)
-    );
-    return ["Tous", ...Array.from(set)];
-  }, [products]);
+  const list = Array.isArray(products) ? products : [];
+  const set = new Set(list.map((p) => p?.categorie).filter(Boolean));
+  return ["Tous", ...Array.from(set)];
+}, [products]);
 
   const filtered = useMemo(() => {
-    const list = (products || []).filter((p) => p?.nom); // items valides
-    return cat === "Tous" ? list : list.filter((p) => p.categorie === cat);
-  }, [cat, products]);
+  const list = (Array.isArray(products) ? products : []).filter((p) => p?.nom);
+  return cat === "Tous" ? list : list.filter((p) => p.categorie === cat);
+}, [cat, products]);
 
   const total = useMemo(() => {
     return cart.reduce(
