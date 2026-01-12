@@ -522,9 +522,11 @@ export default function Page() {
       )}
 
       {/* Styles */}
-      <style>{`
-        :root{
-          --bg:#0b0b0f;
-          --card:#12121a;
-          --stroke:rgba(255,255,255,.08);
-          --txt:#ffffff;
+<style jsx>{`
+  :root{
+    --bg:#0b0b0f;
+    --card:#12121a;
+    --stroke: rgba(255,255,255,.08);
+    --txt:#ffffff;
+  }
+`}</style>
