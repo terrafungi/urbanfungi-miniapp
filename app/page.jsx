@@ -522,7 +522,8 @@ export default function Page() {
       )}
 
       {/* Styles */}
-<style jsx>{`
+{/* Styles */}
+<style jsx global>{`
   :root{
     --bg:#0b0b0f;
     --card:#12121a;
@@ -530,5 +531,6 @@ export default function Page() {
     --txt:#ffffff;
   }
 `}</style>
+
   );
 }
