@@ -1,7 +1,58 @@
-[
-  { "id":"p01", "nom":"Microdose Pack", "prix":29, "categorie":"Packs", "photo":"https://picsum.photos/seed/p01/900/600" },
-  { "id":"p02", "nom":"Focus Énergie", "prix":35, "categorie":"Bien-être", "photo":"https://picsum.photos/seed/p02/900/600" },
-  { "id":"p03", "nom":"Calme & Sommeil", "prix":32, "categorie":"Bien-être", "photo":"https://picsum.photos/seed/p03/900/600" },
-  { "id":"p04", "nom":"Exploration Intérieure", "prix":55, "categorie":"Premium", "photo":"https://picsum.photos/seed/p04/900/600" },
-  { "id":"p05", "nom":"Mini Trip", "prix":49, "categorie":"Découverte", "photo":"https://picsum.photos/seed/p05/900/600" }
-]
+{
+    "generatedAt": "2026-01-12T18:18:19+00:00",
+    "baseUrl": "https:\/\/urbfgi.fun\/catalog-admin",
+    "categories": [
+        {
+            "id": "1",
+            "name": "Champignons",
+            "slug": "champignons",
+            "sort_order": "0"
+        },
+        {
+            "id": "2",
+            "name": "DMT",
+            "slug": "dmt",
+            "sort_order": "0"
+        },
+        {
+            "id": "3",
+            "name": "Synthetique",
+            "slug": "synthetique",
+            "sort_order": "0"
+        },
+        {
+            "id": "4",
+            "name": "Pavot",
+            "slug": "pavot",
+            "sort_order": "0"
+        },
+        {
+            "id": "5",
+            "name": "LSD",
+            "slug": "lsd",
+            "sort_order": "0"
+        }
+    ],
+    "products": [
+        {
+            "id": 1,
+            "title": "test",
+            "slug": "test",
+            "sku": "",
+            "categoryId": 1,
+            "category": "champignons",
+            "price": 20,
+            "salePrice": null,
+            "currency": "EUR",
+            "weight": "1gr",
+            "shortDesc": "test",
+            "longDesc": "test",
+            "image": "https:\/\/urbfgi.fun\/catalog-admin\/uploads\/20260112-181801-76a6ee95.png",
+            "gallery": [],
+            "link": "",
+            "sortOrder": 0,
+            "active": true,
+            "updatedAt": "2026-01-12 13:18:01"
+        }
+    ]
+}
