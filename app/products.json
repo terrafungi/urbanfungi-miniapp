@@ -1,5 +1,5 @@
 {
-    "generatedAt": "2026-01-12T18:18:19+00:00",
+    "generatedAt": "2026-01-12T18:40:00+00:00",
     "baseUrl": "https:\/\/urbfgi.fun\/catalog-admin",
     "categories": [
         {
@@ -48,11 +48,25 @@
             "shortDesc": "test",
             "longDesc": "test",
             "image": "https:\/\/urbfgi.fun\/catalog-admin\/uploads\/20260112-181801-76a6ee95.png",
-            "gallery": [],
+            "gallery": [
+                "https:\/\/urbfgi.fun\/catalog-admin\/uploads\/20260112-181801-76a6ee95.png"
+            ],
             "link": "",
             "sortOrder": 0,
             "active": true,
-            "updatedAt": "2026-01-12 13:18:01"
+            "updatedAt": "2026-01-12 13:24:04",
+            "variants": [
+                {
+                    "id": 1,
+                    "label": "5gr",
+                    "sku": null,
+                    "price": 25,
+                    "salePrice": null,
+                    "weight": "5gr",
+                    "sortOrder": 0,
+                    "active": true
+                }
+            ]
         }
     ]
 }
