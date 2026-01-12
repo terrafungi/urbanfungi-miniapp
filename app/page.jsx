@@ -6,7 +6,6 @@ import products from "./products.json";
 /**
  * Env vars:
  * - NEXT_PUBLIC_API_URL = "https://urbanfungi-api.onrender.com"
- *   (ou NEXT_PUBLIC_API_BASE, on accepte les 2)
  * - NEXT_PUBLIC_DEBUG = "1" pour afficher le panneau debug
  */
 const RAW_API =
@@ -18,7 +17,7 @@ const DEBUG = process.env.NEXT_PUBLIC_DEBUG === "1";
 
 function normalizeBaseUrl(url) {
   if (!url) return "";
-  return url.replace(/\/+$/, ""); // enlève les "/" finaux
+  return url.replace(/\/+$/, "");
 }
 
 const API_BASE = normalizeBaseUrl(RAW_API);
@@ -30,14 +29,29 @@ function getWebApp() {
 }
 
 function euro(n) {
-  const v = Number(n || 0);
-  return v.toFixed(2);
+  return Number(n || 0).toFixed(2);
+}
+
+async function safeJson(res) {
+  const text = await res.text().catch(() => "");
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { _raw: text };
+  }
 }
 
 export default function Page() {
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]); // [{id, nom, prix, qty, photo, categorie}]
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Paiement / order
+  const [lastOrderCode, setLastOrderCode] = useState(null);
+  const [btcAddress, setBtcAddress] = useState("");
+  const [transcashCode, setTranscashCode] = useState("");
+  const [isPaySubmitting, setIsPaySubmitting] = useState(false);
 
   // Init Telegram WebApp (une seule fois)
   useEffect(() => {
@@ -56,6 +70,8 @@ export default function Page() {
   const user = webapp?.initDataUnsafe?.user;
   const initDataLen = (webapp?.initData || "").length;
 
+  const inTelegramWebApp = Boolean(user?.id && initDataLen > 0);
+
   // Categories
   const categories = useMemo(() => {
     const set = new Set(products.map((p) => p.categorie));
@@ -64,12 +80,17 @@ export default function Page() {
 
   // Products filtered
   const filtered = useMemo(() => {
-    return cat === "Tous" ? products : products.filter((p) => p.categorie === cat);
+    return cat === "Tous"
+      ? products
+      : products.filter((p) => p.categorie === cat);
   }, [cat]);
 
   // Total
   const total = useMemo(() => {
-    return cart.reduce((sum, i) => sum + Number(i.prix || 0) * Number(i.qty || 0), 0);
+    return cart.reduce(
+      (sum, i) => sum + Number(i.prix || 0) * Number(i.qty || 0),
+      0
+    );
   }, [cart]);
 
   // Cart actions
@@ -93,21 +114,10 @@ export default function Page() {
     );
   }
 
-  // Safe JSON read
-  async function safeJson(res) {
-    const text = await res.text().catch(() => "");
-    if (!text) return {};
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { _raw: text };
-    }
-  }
-
-  // Checkout
+  // Checkout (création commande)
   async function checkout() {
     if (!API_BASE) return alert("API_URL manquante (NEXT_PUBLIC_API_URL).");
-    if (!user?.id || initDataLen === 0) {
+    if (!inTelegramWebApp) {
       return alert("Ouvrez la boutique via Telegram (Mini App), pas via le navigateur.");
     }
     if (cart.length === 0) return alert("Panier vide.");
@@ -132,8 +142,6 @@ export default function Page() {
           user: { id: user.id, username: user.username || "" },
           items,
           totalEur,
-          // (optionnel) initData si tu veux vérifier côté serveur:
-          // initData: webapp?.initData || ""
         }),
       });
 
@@ -148,13 +156,94 @@ export default function Page() {
         return alert(msg);
       }
 
-      alert(`✅ Commande ${data.orderCode} envoyée.\n\nPaiement BTC (manuel) :\n${data.btcAddress}`);
+      // ✅ Sauvegarde commande + infos paiement
+      setLastOrderCode(data.orderCode);
+      setBtcAddress(data.btcAddress || "");
+      setTranscashCode("");
+
+      // On vide le panier, mais on garde le bloc paiement visible
       setCart([]);
+
+      alert(`✅ Commande ${data.orderCode} créée.\n\nChoisissez votre moyen de paiement (BTC ou Transcash).`);
     } catch (e) {
       console.error(e);
       alert("Erreur réseau. Réessayez.");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  // Client : “J’ai payé en BTC”
+  async function notifyPaidBTC() {
+    if (!API_BASE) return alert("API_URL manquante.");
+    if (!inTelegramWebApp) return alert("Ouvrez dans Telegram.");
+    if (!lastOrderCode) return alert("Aucune commande.");
+
+    if (isPaySubmitting) return;
+    setIsPaySubmitting(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/client-paid-btc`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orderCode: lastOrderCode,
+          user: { id: user.id, username: user.username || "" },
+        }),
+      });
+
+      const data = await safeJson(res);
+      if (!res.ok || !data?.ok) {
+        console.error("client-paid-btc error:", res.status, data);
+        return alert("Erreur envoi notification BTC. Vérifiez les logs API Render.");
+      }
+
+      alert("✅ Notification envoyée. On vérifie votre paiement BTC.");
+    } catch (e) {
+      console.error(e);
+      alert("Erreur réseau (BTC).");
+    } finally {
+      setIsPaySubmitting(false);
+    }
+  }
+
+  // Client : envoi code Transcash
+  async function submitTranscash() {
+    if (!API_BASE) return alert("API_URL manquante.");
+    if (!inTelegramWebApp) return alert("Ouvrez dans Telegram.");
+    if (!lastOrderCode) return alert("Aucune commande.");
+
+    const clean = String(transcashCode || "").trim();
+    if (clean.length < 6) return alert("Code Transcash invalide (trop court).");
+
+    if (isPaySubmitting) return;
+    setIsPaySubmitting(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/submit-transcash`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orderCode: lastOrderCode,
+          code: clean,
+          user: { id: user.id, username: user.username || "" },
+        }),
+      });
+
+      const data = await safeJson(res);
+      if (!res.ok || !data?.ok) {
+        console.error("submit-transcash error:", res.status, data);
+        const msg = data?.error || "Erreur envoi Transcash. Vérifiez les logs API Render.";
+        return alert(msg);
+      }
+
+      alert("✅ Code Transcash envoyé. On vérifie et on confirme.");
+      setTranscashCode("");
+    } catch (e) {
+      console.error(e);
+      alert("Erreur réseau (Transcash).");
+    } finally {
+      setIsPaySubmitting(false);
     }
   }
 
@@ -173,6 +262,7 @@ export default function Page() {
           <div>initData length: {initDataLen}</div>
           <div>user.id: {String(user?.id ?? "undefined")}</div>
           <div>API_BASE: {API_BASE || "(vide)"}</div>
+          <div>orderCode: {lastOrderCode || "(aucune)"}</div>
           <div style={{ marginTop: 6, opacity: 0.85 }}>
             👉 Si initData length = 0, ce n’est pas une vraie Mini App.
           </div>
@@ -199,7 +289,7 @@ export default function Page() {
       </div>
 
       {/* Produits */}
-      <div style={styles.grid}>
+      <div className="uf-grid" style={styles.grid}>
         {filtered.map((p) => (
           <div key={p.id} style={styles.card}>
             <img src={p.photo} alt={p.nom} style={styles.img} />
@@ -216,7 +306,7 @@ export default function Page() {
         ))}
       </div>
 
-      {/* Panier sticky */}
+      {/* Panier + Paiement sticky */}
       <div style={styles.sticky}>
         <div style={styles.stickyInner}>
           <div style={styles.cartTop}>
@@ -257,12 +347,66 @@ export default function Page() {
               ...(cart.length === 0 || isSubmitting ? styles.checkoutDisabled : {}),
             }}
           >
-            {isSubmitting ? "⏳ Envoi…" : "✅ Commander (BTC manuel)"}
+            {isSubmitting ? "⏳ Création…" : "✅ Commander"}
           </button>
+
+          {/* Bloc paiement après création */}
+          {lastOrderCode && (
+            <div style={styles.payBox}>
+              <div style={styles.payTitle}>💳 Paiement</div>
+              <div style={styles.payLine}>
+                Commande : <b>{lastOrderCode}</b>
+              </div>
+
+              {/* BTC */}
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontWeight: 900 }}>Bitcoin (manuel)</div>
+                <div style={styles.addr}>
+                  Adresse BTC : <span style={{ fontFamily: "monospace" }}>{btcAddress || "—"}</span>
+                </div>
+                <button
+                  onClick={notifyPaidBTC}
+                  disabled={isPaySubmitting}
+                  style={{
+                    ...styles.payBtnDark,
+                    ...(isPaySubmitting ? styles.payBtnDisabled : {}),
+                  }}
+                >
+                  ✅ J’ai payé en BTC
+                </button>
+              </div>
+
+              {/* Transcash */}
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 900 }}>Transcash</div>
+                <div style={styles.transRow}>
+                  <input
+                    value={transcashCode}
+                    onChange={(e) => setTranscashCode(e.target.value)}
+                    placeholder="Entrez le code Transcash"
+                    style={styles.input}
+                  />
+                  <button
+                    onClick={submitTranscash}
+                    disabled={isPaySubmitting}
+                    style={{
+                      ...styles.payBtnLight,
+                      ...(isPaySubmitting ? styles.payBtnDisabled : {}),
+                    }}
+                  >
+                    📩 Envoyer
+                  </button>
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
+                  Le code est envoyé au support pour vérification.
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Responsive mini CSS inline */}
+      {/* Responsive */}
       <style>{`
         @media (max-width: 520px) {
           .uf-grid { grid-template-columns: 1fr !important; }
@@ -359,4 +503,46 @@ const styles = {
     fontWeight: 900,
   },
   checkoutDisabled: { background: "#b7f0c7", opacity: 0.9 },
+
+  // Paiement box
+  payBox: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    border: "1px solid #e5e5e5",
+    background: "#fff",
+  },
+  payTitle: { fontWeight: 900, marginBottom: 6 },
+  payLine: { fontSize: 13, opacity: 0.85 },
+  addr: { fontSize: 13, opacity: 0.85, marginTop: 6 },
+
+  transRow: { display: "flex", gap: 8, marginTop: 8 },
+  input: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 10,
+    border: "1px solid #ddd",
+    outline: "none",
+  },
+
+  payBtnDark: {
+    marginTop: 8,
+    width: "100%",
+    padding: 12,
+    borderRadius: 12,
+    border: "none",
+    background: "#111",
+    color: "#fff",
+    fontWeight: 900,
+  },
+  payBtnLight: {
+    padding: 10,
+    borderRadius: 10,
+    border: "1px solid #111",
+    background: "#fff",
+    color: "#111",
+    fontWeight: 900,
+    whiteSpace: "nowrap",
+  },
+  payBtnDisabled: { opacity: 0.7 },
 };
