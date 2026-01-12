@@ -5,20 +5,20 @@ import fallbackProducts from "./products.json";
 
 /**
  * ✅ Source catalogue (PHP)
- * Si un jour tu veux la changer sans toucher au code :
- * ajoute NEXT_PUBLIC_CATALOG_URL dans ton hébergeur (Render/Vercel/etc)
+ * Changeable via env : NEXT_PUBLIC_CATALOG_URL
  */
 const CATALOG_URL =
   process.env.NEXT_PUBLIC_CATALOG_URL || "https://urbfgi.fun/api/catalog.php";
 
 /**
- * ✅ Base API pour envoyer la commande (si tu as déjà un endpoint create-order)
- * Mets NEXT_PUBLIC_API_BASE si besoin, sinon ça utilise urbfgi.fun
+ * ✅ Base API commande (si endpoint create-order)
+ * Changeable via env : NEXT_PUBLIC_API_BASE / NEXT_PUBLIC_API_URL
  */
 const ORDER_API_BASE =
   (process.env.NEXT_PUBLIC_API_BASE ||
     process.env.NEXT_PUBLIC_API_URL ||
-    "https://urbfgi.fun").replace(/\/+$/, "");
+    "https://urbfgi.fun"
+  ).replace(/\/+$/, "");
 
 function getWebApp() {
   if (typeof window === "undefined") return null;
@@ -40,22 +40,20 @@ async function safeJson(res) {
 }
 
 /**
- * ✅ Convertit ton API PHP -> format attendu par ton UI/panier actuel :
- * - nom, photo, categorie, prix, options...
- * Et convertit variants[] -> options(select) pour garder ton panier inchangé.
+ * ✅ Convertit ton API PHP -> format UI/panier :
+ * - variants[] -> options(select) (minPrice + delta)
  */
 function mapApiToLegacy(api) {
   const cats = Array.isArray(api?.categories) ? api.categories : [];
   const catById = new Map(cats.map((c) => [String(c.id), c]));
 
   const out = [];
+
   for (const p of api?.products || []) {
     if (p?.active === false) continue;
 
     const catName =
-      p.category ||
-      catById.get(String(p.categoryId))?.name ||
-      "Autres";
+      p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
     const baseWeight = p.weight || "";
     const currency = p.currency || "EUR";
@@ -124,22 +122,22 @@ function mapApiToLegacy(api) {
 }
 
 function calcVariantPrice(product, selected) {
-  let price = Number(product.prix || 0);
-  const opts = product.options || [];
+  let price = Number(product?.prix || 0);
+  const opts = product?.options || [];
 
   for (const opt of opts) {
     const v = selected?.[opt.name];
     if (!v) continue;
 
     if (opt.type === "select") {
-      const c = opt.choices?.find((x) => x.label === v);
+      const c = (opt.choices || []).find((x) => x.label === v);
       price += Number(c?.priceDelta || 0);
     }
 
     if (opt.type === "toggle") {
       const arr = Array.isArray(v) ? v : [];
       for (const lab of arr) {
-        const c = opt.choices?.find((x) => x.label === lab);
+        const c = (opt.choices || []).find((x) => x.label === lab);
         price += Number(c?.priceDelta || 0);
       }
     }
@@ -178,7 +176,7 @@ export default function Page() {
 
   // ✅ Charger le catalogue depuis ton API PHP (sinon fallbackProducts)
   useEffect(() => {
-    const url = `${CATALOG_URL}?v=${Date.now()}`; // anti-cache Telegram/GitHub
+    const url = `${CATALOG_URL}?v=${Date.now()}`; // anti-cache
     fetch(url, { cache: "no-store" })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -194,12 +192,14 @@ export default function Page() {
   }, []);
 
   const categories = useMemo(() => {
-    const set = new Set((products || []).map((p) => p?.categorie).filter(Boolean));
+    const set = new Set(
+      (products || []).map((p) => p?.categorie).filter(Boolean)
+    );
     return ["Tous", ...Array.from(set)];
   }, [products]);
 
   const filtered = useMemo(() => {
-    const list = (products || []).filter((p) => p?.nom); // garde les items valides
+    const list = (products || []).filter((p) => p?.nom); // items valides
     return cat === "Tous" ? list : list.filter((p) => p.categorie === cat);
   }, [cat, products]);
 
@@ -302,10 +302,7 @@ export default function Page() {
 
       const data = await safeJson(res);
       if (!res.ok || !data?.ok) {
-        const msg =
-          data?.error ||
-          data?.message ||
-          `Erreur commande (${res.status})`;
+        const msg = data?.error || data?.message || `Erreur (${res.status})`;
         return alert(msg);
       }
 
@@ -320,214 +317,516 @@ export default function Page() {
   }
 
   return (
-    <div className="wrap">
-      <div className="topbar">
-        <div className="brand">
-          <div className="logo">🍄</div>
-          <div>
-            <div className="title">UrbanFungi</div>
-            <div className="subtitle">Boutique • Mini App</div>
-          </div>
-        </div>
-
-        <div className="totalPill">
-          <div className="muted">Total</div>
-          <div className="big">{euro(total)} €</div>
-        </div>
-      </div>
-
-      <div className="cats">
-        {categories.map((c) => (
-          <button
-            key={c}
-            onClick={() => setCat(c)}
-            className={`chip ${c === cat ? "active" : ""}`}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
-
-      <div className="grid">
-        {filtered.map((p) => (
-          <div key={p.id} className="card">
-            {p.photo ? <img className="img" src={p.photo} alt={p.nom} /> : null}
-            <div className="cardBody">
-              <div className="name">{p.nom}</div>
-              <div className="meta">
-                {p.categorie}
-                {p.poids ? ` • ${p.poids}` : ""}
-              </div>
-
-              <div className="row">
-                <div className="price">{euro(p.prix)} €</div>
-                {p.options?.length ? (
-                  <button className="btn" onClick={() => openOptions(p)}>
-                    ⚙️ Options
-                  </button>
-                ) : (
-                  <button className="btn" onClick={() => addToCart(p, {})}>
-                    ➕ Ajouter
-                  </button>
-                )}
-              </div>
+    <>
+      <div className="wrap">
+        <div className="topbar">
+          <div className="brand">
+            <div className="logo">🍄</div>
+            <div>
+              <div className="title">UrbanFungi</div>
+              <div className="subtitle">Boutique • Mini App</div>
             </div>
           </div>
-        ))}
-      </div>
 
-      {/* Cart */}
-      <div className="cart">
-        <div className="cartTop">
-          <div className="cartTitle">🛒 Panier</div>
-          <div className="cartTotal">{euro(total)} €</div>
+          <div className="totalPill">
+            <div className="muted">Total</div>
+            <div className="big">{euro(total)} €</div>
+          </div>
         </div>
 
-        {cart.length === 0 ? (
-          <div className="empty">Ajoutez un produit pour commander.</div>
-        ) : (
-          <div className="cartList">
-            {cart.map((i) => (
-              <div className="cartRow" key={i.key}>
-                <div className="left">
-                  <div className="cartName">{i.nom}</div>
+        <div className="cats">
+          {categories.map((c) => (
+            <button
+              key={c}
+              onClick={() => setCat(c)}
+              className={`chip ${c === cat ? "active" : ""}`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
 
-                  {i.selected && Object.keys(i.selected).length > 0 && (
-                    <div className="opts">
-                      {Object.entries(i.selected).map(([k, v]) => (
-                        <span key={k} className="optTag">
-                          {k}: {Array.isArray(v) ? v.join(", ") : v}
-                        </span>
-                      ))}
+        <div className="grid">
+          {filtered.map((p) => (
+            <div key={p.id ?? p.nom} className="card">
+              {p.photo ? (
+                <img className="img" src={p.photo} alt={p.nom} />
+              ) : (
+                <div className="img ph">🍄</div>
+              )}
+
+              <div className="cardBody">
+                <div className="name">{p.nom}</div>
+                <div className="meta">
+                  {p.categorie}
+                  {p.poids ? ` • ${p.poids}` : ""}
+                </div>
+
+                <div className="row">
+                  <div className="price">{euro(p.prix)} €</div>
+                  {p.options?.length ? (
+                    <button className="btn" onClick={() => openOptions(p)}>
+                      ⚙️ Options
+                    </button>
+                  ) : (
+                    <button className="btn" onClick={() => addToCart(p, {})}>
+                      ➕ Ajouter
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Cart (fixed bottom) */}
+        <div className="cart">
+          <div className="cartInner">
+            <div className="cartTop">
+              <div className="cartTitle">🛒 Panier</div>
+              <div className="cartTotal">{euro(total)} €</div>
+            </div>
+
+            {cart.length === 0 ? (
+              <div className="empty">Ajoutez un produit pour commander.</div>
+            ) : (
+              <div className="cartList">
+                {cart.map((i) => (
+                  <div className="cartRow" key={i.key}>
+                    <div className="left">
+                      <div className="cartName">{i.nom}</div>
+
+                      {i.selected && Object.keys(i.selected).length > 0 && (
+                        <div className="opts">
+                          {Object.entries(i.selected).map(([k, v]) => (
+                            <span key={k} className="optTag">
+                              {k}: {Array.isArray(v) ? v.join(", ") : v}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="muted">{euro(i.unitPrice)} € / unité</div>
+                    </div>
+
+                    <div className="qty">
+                      <button className="qbtn" onClick={() => dec(i.key)}>
+                        −
+                      </button>
+                      <div className="qnum">{i.qty}</div>
+                      <button className="qbtn" onClick={() => inc(i.key)}>
+                        +
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              className="checkout"
+              disabled={!cart.length || isSubmitting}
+              onClick={checkout}
+            >
+              {isSubmitting ? "⏳ Envoi…" : "✅ Commander"}
+            </button>
+          </div>
+        </div>
+
+        {/* Modal options */}
+        {openProduct && (
+          <div className="modalBack" onClick={() => setOpenProduct(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modalHead">
+                <div>
+                  <div className="modalTitle">{openProduct.nom}</div>
+                  <div className="muted">Choisissez vos options</div>
+                </div>
+                <button className="close" onClick={() => setOpenProduct(null)}>
+                  ✕
+                </button>
+              </div>
+
+              {(openProduct.options || []).map((opt) => (
+                <div key={opt.name} className="optBlock">
+                  <div className="optName">
+                    {opt.label || opt.name}{" "}
+                    {opt.required ? (
+                      <span className="req">• obligatoire</span>
+                    ) : null}
+                  </div>
+
+                  {opt.type === "select" && (
+                    <div className="choices">
+                      {(opt.choices || []).map((c) => {
+                        const active = selected?.[opt.name] === c.label;
+                        return (
+                          <button
+                            key={c.label}
+                            className={`choice ${active ? "active" : ""}`}
+                            onClick={() =>
+                              setSelected((s) => ({ ...s, [opt.name]: c.label }))
+                            }
+                          >
+                            <span>{c.label}</span>
+                            {Number(c.priceDelta || 0) !== 0 && (
+                              <span className="delta">
+                                {c.priceDelta > 0
+                                  ? `+${euro(c.priceDelta)}`
+                                  : euro(c.priceDelta)}
+                                €
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
 
-                  <div className="muted">{euro(i.unitPrice)} € / unité</div>
+                  {opt.type === "toggle" && (
+                    <div className="choices">
+                      {(opt.choices || []).map((c) => {
+                        const arr = Array.isArray(selected?.[opt.name])
+                          ? selected[opt.name]
+                          : [];
+                        const active = arr.includes(c.label);
+                        return (
+                          <button
+                            key={c.label}
+                            className={`choice ${active ? "active" : ""}`}
+                            onClick={() => {
+                              setSelected((s) => {
+                                const cur = Array.isArray(s[opt.name])
+                                  ? s[opt.name]
+                                  : [];
+                                const next = active
+                                  ? cur.filter((x) => x !== c.label)
+                                  : [...cur, c.label];
+                                return { ...s, [opt.name]: next };
+                              });
+                            }}
+                          >
+                            <span>{active ? "✅ " : ""}{c.label}</span>
+                            {Number(c.priceDelta || 0) !== 0 && (
+                              <span className="delta">
+                                +{euro(c.priceDelta)}€
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
+              ))}
 
-                <div className="qty">
-                  <button className="qbtn" onClick={() => dec(i.key)}>
-                    −
-                  </button>
-                  <div className="qnum">{i.qty}</div>
-                  <button className="qbtn" onClick={() => inc(i.key)}>
-                    +
-                  </button>
+              <div className="modalFoot">
+                <div className="finalPrice">
+                  Prix:{" "}
+                  <b>{euro(calcVariantPrice(openProduct, selected))} €</b>
                 </div>
+                <button
+                  className="cta"
+                  onClick={() => addToCart(openProduct, selected)}
+                >
+                  ➕ Ajouter au panier
+                </button>
               </div>
-            ))}
+            </div>
           </div>
         )}
-
-        <button
-          className="checkout"
-          disabled={!cart.length || isSubmitting}
-          onClick={checkout}
-        >
-          {isSubmitting ? "⏳ Envoi…" : "✅ Commander"}
-        </button>
       </div>
 
-      {/* Modal options */}
-      {openProduct && (
-        <div className="modalBack" onClick={() => setOpenProduct(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modalHead">
-              <div>
-                <div className="modalTitle">{openProduct.nom}</div>
-                <div className="muted">Choisissez vos options</div>
-              </div>
-              <button className="close" onClick={() => setOpenProduct(null)}>
-                ✕
-              </button>
-            </div>
+      {/* ✅ Styles (PROPRE, valide, complet) */}
+      <style jsx global>{`
+        :root{
+          --bg:#0b0b0f;
+          --card:#12121a;
+          --stroke: rgba(255,255,255,.08);
+          --txt:#ffffff;
+          --muted: rgba(255,255,255,.72);
+          --chip: rgba(255,255,255,.06);
+          --chip2: rgba(255,255,255,.10);
+          --accent: #7c5cff;
+        }
+        html, body {
+          background: var(--bg);
+          color: var(--txt);
+          margin: 0;
+          padding: 0;
+          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        }
+        * { box-sizing: border-box; }
 
-            {(openProduct.options || []).map((opt) => (
-              <div key={opt.name} className="optBlock">
-                <div className="optName">
-                  {opt.label || opt.name}{" "}
-                  {opt.required ? <span className="req">• obligatoire</span> : null}
-                </div>
+        .wrap{
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 16px 16px 220px;
+        }
+        .muted{ color: var(--muted); }
+        .topbar{
+          display:flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 14px;
+        }
+        .brand{ display:flex; align-items:center; gap:10px; }
+        .logo{
+          width: 44px;
+          height: 44px;
+          border-radius: 14px;
+          background: var(--card);
+          border: 1px solid var(--stroke);
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          box-shadow: 0 10px 30px rgba(0,0,0,.25);
+        }
+        .title{ font-weight: 900; letter-spacing: .2px; }
+        .subtitle{ font-size: 12px; color: var(--muted); }
+        .totalPill{
+          background: var(--card);
+          border: 1px solid var(--stroke);
+          border-radius: 16px;
+          padding: 10px 12px;
+          min-width: 140px;
+          text-align: right;
+        }
+        .big{ font-size: 18px; font-weight: 900; }
+        .cats{
+          display:flex;
+          gap: 8px;
+          overflow:auto;
+          padding-bottom: 6px;
+          margin-bottom: 12px;
+        }
+        .chip{
+          border: 1px solid var(--stroke);
+          background: var(--chip);
+          color: var(--txt);
+          border-radius: 999px;
+          padding: 8px 12px;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: .15s;
+        }
+        .chip:hover{ background: var(--chip2); }
+        .chip.active{
+          border-color: rgba(124,92,255,.55);
+          box-shadow: 0 0 0 3px rgba(124,92,255,.18);
+        }
 
-                {opt.type === "select" && (
-                  <div className="choices">
-                    {opt.choices.map((c) => {
-                      const active = selected?.[opt.name] === c.label;
-                      return (
-                        <button
-                          key={c.label}
-                          className={`choice ${active ? "active" : ""}`}
-                          onClick={() =>
-                            setSelected((s) => ({ ...s, [opt.name]: c.label }))
-                          }
-                        >
-                          {c.label}
-                          {Number(c.priceDelta || 0) !== 0 && (
-                            <span className="delta">
-                              {c.priceDelta > 0
-                                ? `+${euro(c.priceDelta)}`
-                                : euro(c.priceDelta)}
-                              €
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+        .grid{
+          display:grid;
+          grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+          gap: 12px;
+        }
+        .card{
+          background: var(--card);
+          border: 1px solid var(--stroke);
+          border-radius: 18px;
+          overflow: hidden;
+          box-shadow: 0 12px 40px rgba(0,0,0,.25);
+        }
+        .img{
+          width: 100%;
+          height: 150px;
+          object-fit: cover;
+          display:block;
+          background: #000;
+        }
+        .img.ph{
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          font-size: 44px;
+          color: rgba(255,255,255,.7);
+          background: rgba(255,255,255,.03);
+        }
+        .cardBody{ padding: 12px; display:flex; flex-direction:column; gap: 8px; }
+        .name{ font-weight: 850; }
+        .meta{ font-size: 12px; color: var(--muted); }
+        .row{ display:flex; align-items:center; justify-content:space-between; gap: 10px; }
+        .price{ font-weight: 900; font-size: 16px; }
 
-                {opt.type === "toggle" && (
-                  <div className="choices">
-                    {opt.choices.map((c) => {
-                      const arr = Array.isArray(selected?.[opt.name])
-                        ? selected[opt.name]
-                        : [];
-                      const active = arr.includes(c.label);
-                      return (
-                        <button
-                          key={c.label}
-                          className={`choice ${active ? "active" : ""}`}
-                          onClick={() => {
-                            setSelected((s) => {
-                              const cur = Array.isArray(s[opt.name]) ? s[opt.name] : [];
-                              const next = active
-                                ? cur.filter((x) => x !== c.label)
-                                : [...cur, c.label];
-                              return { ...s, [opt.name]: next };
-                            });
-                          }}
-                        >
-                          {active ? "✅ " : ""}{c.label}
-                          {Number(c.priceDelta || 0) !== 0 && (
-                            <span className="delta">+{euro(c.priceDelta)}€</span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ))}
+        .btn{
+          border: 1px solid var(--stroke);
+          background: rgba(255,255,255,.06);
+          color: var(--txt);
+          border-radius: 14px;
+          padding: 8px 10px;
+          cursor: pointer;
+          transition: .15s;
+        }
+        .btn:hover{ background: rgba(255,255,255,.10); }
 
-            <div className="modalFoot">
-              <div className="finalPrice">
-                Prix: <b>{euro(calcVariantPrice(openProduct, selected))} €</b>
-              </div>
-              <button className="cta" onClick={() => addToCart(openProduct, selected)}>
-                ➕ Ajouter au panier
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Styles */}
-<style jsx global>{`
-  :root{
-    --bg:#0b0b0f;
-    --card:#12121a;
-    --stroke: rgba(255,255,255,.08);
-    --txt:#ffffff;
-  }
-`}</style>
-    );
+        .cart{
+          position: fixed;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(11,11,15,.82);
+          backdrop-filter: blur(10px);
+          border-top: 1px solid var(--stroke);
+          padding: 12px;
+          z-index: 40;
+        }
+        .cartInner{
+          max-width: 980px;
+          margin: 0 auto;
+        }
+        .cartTop{
+          display:flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 10px;
+        }
+        .cartTitle{ font-weight: 900; }
+        .cartTotal{ font-weight: 900; }
+        .empty{ color: var(--muted); padding: 8px 0; }
+        .cartList{
+          max-height: 170px;
+          overflow:auto;
+          border: 1px solid var(--stroke);
+          border-radius: 14px;
+          background: rgba(255,255,255,.03);
+          padding: 8px;
+          margin-bottom: 10px;
+        }
+        .cartRow{
+          display:flex;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 10px;
+          border-radius: 12px;
+        }
+        .cartRow + .cartRow{ border-top: 1px solid rgba(255,255,255,.06); }
+        .left{ flex:1; min-width: 0; }
+        .cartName{ font-weight: 850; }
+        .opts{ display:flex; flex-wrap:wrap; gap: 6px; margin: 6px 0; }
+        .optTag{
+          font-size: 12px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,.10);
+          background: rgba(255,255,255,.05);
+          color: var(--muted);
+        }
+        .qty{ display:flex; align-items:center; gap: 10px; }
+        .qbtn{
+          width: 34px;
+          height: 34px;
+          border-radius: 12px;
+          border: 1px solid var(--stroke);
+          background: rgba(255,255,255,.06);
+          color: var(--txt);
+          cursor: pointer;
+          font-size: 18px;
+          line-height: 1;
+        }
+        .qbtn:hover{ background: rgba(255,255,255,.10); }
+        .qnum{ min-width: 22px; text-align:center; font-weight: 900; }
+
+        .checkout{
+          width: 100%;
+          border: 0;
+          border-radius: 16px;
+          padding: 12px 14px;
+          font-weight: 900;
+          cursor: pointer;
+          background: linear-gradient(135deg, rgba(124,92,255,.95), rgba(124,92,255,.65));
+          color: white;
+          box-shadow: 0 14px 40px rgba(124,92,255,.20);
+        }
+        .checkout:disabled{
+          opacity: .55;
+          cursor: not-allowed;
+        }
+
+        .modalBack{
+          position: fixed;
+          inset: 0;
+          background: rgba(0,0,0,.55);
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          z-index: 60;
+          padding: 16px;
+        }
+        .modal{
+          width: min(620px, 100%);
+          background: var(--card);
+          border: 1px solid var(--stroke);
+          border-radius: 18px;
+          box-shadow: 0 20px 80px rgba(0,0,0,.45);
+          overflow: hidden;
+        }
+        .modalHead{
+          display:flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 12px;
+          padding: 14px 14px 10px;
+          border-bottom: 1px solid rgba(255,255,255,.06);
+        }
+        .modalTitle{ font-weight: 950; font-size: 18px; }
+        .close{
+          border: 1px solid var(--stroke);
+          background: rgba(255,255,255,.06);
+          color: var(--txt);
+          border-radius: 12px;
+          padding: 8px 10px;
+          cursor: pointer;
+        }
+        .close:hover{ background: rgba(255,255,255,.10); }
+
+        .optBlock{ padding: 12px 14px; }
+        .optName{ font-weight: 850; margin-bottom: 8px; }
+        .req{ color: rgba(255,255,255,.6); font-size: 12px; margin-left: 6px; }
+        .choices{ display:flex; flex-wrap:wrap; gap: 10px; }
+        .choice{
+          display:flex;
+          align-items:center;
+          justify-content: space-between;
+          gap: 10px;
+          min-width: 160px;
+          border: 1px solid rgba(255,255,255,.10);
+          background: rgba(255,255,255,.05);
+          color: var(--txt);
+          border-radius: 14px;
+          padding: 10px 12px;
+          cursor: pointer;
+          transition: .15s;
+        }
+        .choice:hover{ background: rgba(255,255,255,.09); }
+        .choice.active{
+          border-color: rgba(124,92,255,.55);
+          box-shadow: 0 0 0 3px rgba(124,92,255,.18);
+        }
+        .delta{ color: rgba(255,255,255,.75); font-weight: 800; }
+
+        .modalFoot{
+          display:flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          padding: 14px;
+          border-top: 1px solid rgba(255,255,255,.06);
+        }
+        .finalPrice{ font-weight: 850; }
+        .cta{
+          border: 0;
+          border-radius: 16px;
+          padding: 10px 14px;
+          font-weight: 900;
+          cursor: pointer;
+          background: rgba(255,255,255,.10);
+          color: var(--txt);
+          border: 1px solid rgba(255,255,255,.12);
+        }
+        .cta:hover{ background: rgba(255,255,255,.14); }
+      `}</style>
+    </>
+  );
 }
