@@ -520,15 +520,14 @@ export default function Page() {
           </div>
         </div>
       )}
-
-            {/* Styles */}
-      <style jsx global>{`
-        :root{
-          --bg:#0b0b0f;
-          --card:#12121a;
-          --stroke: rgba(255,255,255,.08);
-          --txt:#ffffff;
-        }
-      `}</style>
+      {/* Styles */}
+<style jsx global>{`
+  :root{
+    --bg:#0b0b0f;
+    --card:#12121a;
+    --stroke: rgba(255,255,255,.08);
+    --txt:#ffffff;
+  }
+`}</style>
     );
 }
