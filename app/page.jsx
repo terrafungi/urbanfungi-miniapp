@@ -150,11 +150,108 @@ async function safeJson(res) {
   }
 }
 const API_BASE = "https://urbfgi.fun/api/catalog.php";
+function mapApiToLegacy(api) {
+  const cats = Array.isArray(api?.categories) ? api.categories : [];
+  const catById = new Map(cats.map((c) => [String(c.id), c]));
+
+  const out = [];
+  for (const p of (api?.products || [])) {
+    if (p?.active === false) continue;
+
+    const catName =
+      p.category ||
+      catById.get(String(p.categoryId))?.name ||
+      "";
+
+    const baseWeight = p.weight || "";
+    const currency = p.currency || "EUR";
+
+    // Variantes -> options (select) pour garder ton panier/design
+    if (Array.isArray(p.variants) && p.variants.length > 0) {
+      const activeVars = p.variants.filter((v) => v?.active !== false);
+      const prices = activeVars.map((v) => Number(v.salePrice ?? v.price ?? Infinity));
+      const minPrice = Math.min(...prices);
+
+      const choices = activeVars.map((v) => {
+        const price = Number(v.salePrice ?? v.price ?? 0);
+        return {
+          label: v.label || v.weight || "Option",
+          priceDelta: Number((price - minPrice).toFixed(2)),
+          variantId: v.id,
+          weight: v.weight || null,
+        };
+      });
+
+      out.push({
+        id: p.id,
+        title: p.title,
+        titre: p.title,
+        categorie: catName,
+        category: catName,
+        prix: Number(minPrice.toFixed(2)),
+        currency,
+        poids: baseWeight,
+        image: p.image || "",
+        photo: p.image || "",
+        description: p.shortDesc || p.longDesc || "",
+        shortDesc: p.shortDesc || "",
+        longDesc: p.longDesc || "",
+        link: p.link || "",
+        options: [
+          { name: "variante", label: "Choix", type: "select", choices },
+        ],
+      });
+
+      continue;
+    }
+
+    // Sans variantes
+    const basePrice = Number(p.salePrice ?? p.price ?? 0);
+
+    out.push({
+      id: p.id,
+      title: p.title,
+      titre: p.title,
+      categorie: catName,
+      category: catName,
+      prix: Number(basePrice.toFixed(2)),
+      currency,
+      poids: baseWeight,
+      image: p.image || "",
+      photo: p.image || "",
+      description: p.shortDesc || p.longDesc || "",
+      shortDesc: p.shortDesc || "",
+      longDesc: p.longDesc || "",
+      link: p.link || "",
+      options: p.options || [],
+    });
+  }
+
+  return out;
+}
 
 export default function Page() {
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]); // [{key, id, nom, qty, unitPrice, selected, photo}]
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [products, setProducts] = useState(fallbackProducts);
+
+useEffect(() => {
+  const url = `${CATALOG_URL}?v=${Date.now()}`; // anti-cache Telegram
+  fetch(url, { cache: "no-store" })
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then((api) => {
+      const mapped = mapApiToLegacy(api);
+      if (Array.isArray(mapped) && mapped.length) setProducts(mapped);
+    })
+    .catch(() => {
+      // si l’API échoue, on garde fallbackProducts
+    });
+}, []);
+
 
   // modal options
   const [openProduct, setOpenProduct] = useState(null);
