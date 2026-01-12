@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import products from "./products.json";
+import fallbackProducts from "./products.json";
+
 
 const RAW_API =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -12,7 +13,9 @@ function normalizeBaseUrl(url) {
   if (!url) return "";
   return url.replace(/\/+$/, "");
 }
-const API_BASE = normalizeBaseUrl(RAW_API);
+const API_BASE = normalizeBaseUrl(RAW_API || "https://urbfgi.fun");
+const CATALOG_URL = `${API_BASE}/api/catalog.php`;
+
 
 function getWebApp() {
   if (typeof window === "undefined") return null;
@@ -21,6 +24,92 @@ function getWebApp() {
 
 function euro(n) {
   return Number(n || 0).toFixed(2);
+}
+const CATALOG_URL = "https://urbfgi.fun/api/catalog.php";
+
+function mapApiToLegacy(api) {
+  const cats = Array.isArray(api?.categories) ? api.categories : [];
+  const catById = new Map(cats.map((c) => [String(c.id), c]));
+
+  const out = [];
+  for (const p of (api?.products || [])) {
+    if (p?.active === false) continue;
+
+    const catName =
+      p.category ||
+      catById.get(String(p.categoryId))?.name ||
+      "";
+
+    const baseWeight = p.weight || "";
+    const currency = p.currency || "EUR";
+
+    // Si variantes -> on convertit en "options" (select) pour ton panier
+    if (Array.isArray(p.variants) && p.variants.length > 0) {
+      const activeVars = p.variants.filter((v) => v?.active !== false);
+      const prices = activeVars.map((v) => Number(v.salePrice ?? v.price ?? Infinity));
+      const minPrice = Math.min(...prices);
+
+      const choices = activeVars.map((v) => {
+        const price = Number(v.salePrice ?? v.price ?? 0);
+        return {
+          label: v.label || v.weight || "Option",
+          priceDelta: Number((price - minPrice).toFixed(2)),
+          variantId: v.id,
+          weight: v.weight || null,
+        };
+      });
+
+      out.push({
+        id: p.id,
+        title: p.title,
+        titre: p.title,               // au cas où ton UI utilise "titre"
+        categorie: catName,
+        category: catName,
+        prix: Number(minPrice.toFixed(2)),
+        currency,
+        poids: baseWeight,
+        image: p.image || "",
+        photo: p.image || "",         // au cas où ton UI utilise "photo"
+        description: p.shortDesc || p.longDesc || "",
+        shortDesc: p.shortDesc || "",
+        longDesc: p.longDesc || "",
+        link: p.link || "",
+        options: [
+          {
+            name: "variante",
+            label: "Choix",
+            type: "select",
+            choices,
+          },
+        ],
+      });
+
+      continue;
+    }
+
+    // Sans variantes
+    const basePrice = Number(p.salePrice ?? p.price ?? 0);
+
+    out.push({
+      id: p.id,
+      title: p.title,
+      titre: p.title,
+      categorie: catName,
+      category: catName,
+      prix: Number(basePrice.toFixed(2)),
+      currency,
+      poids: baseWeight,
+      image: p.image || "",
+      photo: p.image || "",
+      description: p.shortDesc || p.longDesc || "",
+      shortDesc: p.shortDesc || "",
+      longDesc: p.longDesc || "",
+      link: p.link || "",
+      options: p.options || [],
+    });
+  }
+
+  return out;
 }
 
 function calcVariantPrice(product, selected) {
