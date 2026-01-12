@@ -530,3 +530,5 @@ export default function Page() {
     --txt:#ffffff;
   }
 `}</style>
+  );
+}
