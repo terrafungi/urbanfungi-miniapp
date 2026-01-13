@@ -6,13 +6,13 @@ import fallbackProductsRaw from "./products.json";
 const CATALOG_URL =
   process.env.NEXT_PUBLIC_CATALOG_URL || "https://urbfgi.fun/api/catalog.php";
 
-function getWebApp() {
-  if (typeof window === "undefined") return null;
-  return window.Telegram?.WebApp ?? null;
-}
-
 function euro(n) {
   return Number(n || 0).toFixed(2);
+}
+
+function getWebAppSafe() {
+  if (typeof window === "undefined") return null;
+  return window.Telegram?.WebApp ?? null;
 }
 
 /**
@@ -40,9 +40,7 @@ function mapApiToLegacy(api) {
     if (p.active === false) continue;
 
     const catName =
-      p.category ||
-      catById.get(String(p.categoryId))?.name ||
-      "Autres";
+      p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
     const baseWeight = p.weight || "";
     const currency = p.currency || "EUR";
@@ -145,6 +143,8 @@ export default function Page() {
     []
   );
 
+  const [webapp, setWebapp] = useState(null);
+
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]); // [{key, id, nom, qty, unitPrice, selected, photo}]
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -156,7 +156,9 @@ export default function Page() {
 
   // Telegram init
   useEffect(() => {
-    const w = getWebApp();
+    const w = getWebAppSafe();
+    setWebapp(w);
+
     if (!w) return;
     try {
       w.ready();
@@ -178,9 +180,7 @@ export default function Page() {
         const mapped = mapApiToLegacy(api);
         if (Array.isArray(mapped) && mapped.length) setProducts(mapped);
       })
-      .catch(() => {
-        // fallback si API down
-      });
+      .catch(() => {});
   }, []);
 
   const categories = useMemo(() => {
@@ -259,61 +259,69 @@ export default function Page() {
     );
   }
 
-  // ✅ envoi fiable au bot via sendData()
-  function sendOrderToBot() {
-    const webapp = getWebApp();
-    const user = webapp?.initDataUnsafe?.user;
+  /**
+   * ✅ ENVOI COMMANDE AU BOT (le truc clé)
+   * - payload ultra léger
+   * - showAlert debug (tu vois si ça part)
+   * - close avec délai confortable
+   */
+  function checkout() {
+    const w = webapp || getWebAppSafe();
 
-    if (!webapp || !user?.id) {
-      alert("Ouvrez via Telegram (Mini App), pas navigateur.");
+    if (!w || !w.initDataUnsafe?.user?.id) {
+      alert("❌ Ouvrez la boutique depuis Telegram (via le bouton du bot).");
       return;
     }
     if (!cart.length) {
       alert("Panier vide.");
       return;
     }
+    if (isSubmitting) return;
 
-    // ⚠️ payload court (limite Telegram)
+    setIsSubmitting(true);
+
     const items = cart.map((i) => ({
       id: i.id,
-      qty: Number(i.qty),
+      nom: i.nom, // optionnel mais pratique côté bot
+      qty: Number(i.qty || 1),
       options: i.selected || {},
     }));
 
     const payload = {
       type: "ORDER",
+      totalEur: Number(total || 0),
       items,
-      totalEur: Number(total),
-      // optionnel (si vous voulez afficher côté bot)
-      meta: {
-        count: items.length,
-      },
     };
 
+    const json = JSON.stringify(payload);
+
     try {
-      webapp.sendData(JSON.stringify(payload));
-      // petite latence => Telegram a le temps d'envoyer le message au bot
-      setTimeout(() => webapp.close(), 300);
+      // Debug visible (important pour confirmer)
+      w.showAlert?.("✅ Commande envoyée au bot. Retour au chat…");
+
+      // Envoi Telegram -> bot (web_app_data)
+      w.sendData(json);
+
+      // Délai plus long = plus fiable
+      setTimeout(() => {
+        try {
+          w.close();
+        } catch {}
+      }, 800);
     } catch (e) {
       console.error(e);
-      alert("Erreur envoi au bot. Réessayez.");
+      alert("❌ Erreur sendData. Réessayez.");
+    } finally {
+      setTimeout(() => setIsSubmitting(false), 900);
     }
   }
 
-  // Optionnel : activer le bouton principal Telegram (pratique mobile)
+  // MainButton Telegram (optionnel mais cool)
   useEffect(() => {
-    const w = getWebApp();
+    const w = webapp;
     if (!w) return;
 
-    const handler = () => {
-      if (isSubmitting) return;
-      setIsSubmitting(true);
-      try {
-        sendOrderToBot();
-      } finally {
-        setTimeout(() => setIsSubmitting(false), 400);
-      }
-    };
+    const handler = () => checkout();
 
     try {
       if (cart.length) {
@@ -330,7 +338,7 @@ export default function Page() {
         w.offEvent("mainButtonClicked", handler);
       } catch {}
     };
-  }, [cart.length, total, isSubmitting]);
+  }, [webapp, cart.length, total]); // ⚠️ pas isSubmitting ici (évite double binding)
 
   return (
     <div className="wrap">
@@ -433,7 +441,7 @@ export default function Page() {
         <button
           className="checkout"
           disabled={!cart.length || isSubmitting}
-          onClick={sendOrderToBot}
+          onClick={checkout}
         >
           {isSubmitting ? "⏳ Envoi…" : "✅ Commander (Bitcoin / Transcash)"}
         </button>
@@ -515,9 +523,7 @@ export default function Page() {
                           {active ? "✅ " : ""}
                           {c.label}
                           {Number(c.priceDelta || 0) !== 0 && (
-                            <span className="delta">
-                              +{euro(c.priceDelta)}€
-                            </span>
+                            <span className="delta">+{euro(c.priceDelta)}€</span>
                           )}
                         </button>
                       );
