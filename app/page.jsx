@@ -239,47 +239,45 @@ export default function Page() {
   }
 
   // ✅ ENVOI AU BOT (comme avant)
-  async function checkout() {
-    const webapp = getWebApp();
-    const user = webapp?.initDataUnsafe?.user;
-    const initDataLen = (webapp?.initData || "").length;
+ async function checkout() {
+  const webapp = getWebApp();
+  const user = webapp?.initDataUnsafe?.user;
 
-    if (!user?.id || initDataLen === 0) {
-      return alert("Ouvrez via Telegram (Mini App), pas navigateur.");
-    }
-    if (cart.length === 0) return alert("Panier vide.");
-    if (isSubmitting) return;
-
-    setIsSubmitting(true);
-    try {
-      const items = cart.map((i) => ({
-        id: i.id,
-        nom: i.nom,
-        prix: Number(i.unitPrice),
-        qty: Number(i.qty),
-        options: i.selected,
-      }));
-
-      const payload = {
-        type: "ORDER",
-        totalEur: Number(total),
-        items,
-        ts: Date.now(),
-      };
-
-      // Envoi au bot (message.web_app_data)
-      webapp.sendData(JSON.stringify(payload));
-
-      alert("✅ Commande envoyée. Retournez au chat pour payer (BTC/Transcash).");
-      setCart([]);
-      try { webapp.close(); } catch {}
-    } catch (e) {
-      console.error(e);
-      alert("Erreur. Réessayez.");
-    } finally {
-      setIsSubmitting(false);
-    }
+  if (!webapp || !user?.id) {
+    return alert("Ouvrez via Telegram (Mini App), pas navigateur.");
   }
+  if (cart.length === 0) return alert("Panier vide.");
+  if (isSubmitting) return;
+
+  setIsSubmitting(true);
+  try {
+    // ⚠️ payload le plus léger possible (évite limite 4096 bytes)
+    const items = cart.map((i) => ({
+      id: i.id,
+      qty: Number(i.qty),
+      options: i.selected || {},
+      nom: i.nom,          // (optionnel)
+      prix: Number(i.unitPrice), // (optionnel)
+    }));
+
+    const payload = {
+      type: "ORDER",
+      items,
+      totalEur: Number(total),
+    };
+
+    // ✅ envoie au bot
+    webapp.sendData(JSON.stringify(payload));
+
+    // ✅ revient au chat
+    webapp.close();
+  } catch (e) {
+    console.error(e);
+    alert("Erreur lors de l'envoi au bot.");
+  } finally {
+    setIsSubmitting(false);
+  }
+}
 
   return (
     <>
