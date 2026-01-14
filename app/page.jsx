@@ -4,15 +4,17 @@ import { useEffect, useMemo, useState } from "react";
 import fallbackRaw from "./products.json";
 
 const CATALOG_URL =
-  process.env.NEXT_PUBLIC_CATALOG_URL || "https://urbfgi.fun/api/catalog.php";
+  process.env.NEXT_PUBLIC_CATALOG_URL || "/api/catalog.php"; // ✅ même domaine (Render)
 
 function getWebApp() {
   if (typeof window === "undefined") return null;
   return window.Telegram?.WebApp ?? null;
 }
+
 function euro(n) {
   return Number(n || 0).toFixed(2);
 }
+
 function normalizeFallback(raw) {
   if (Array.isArray(raw)) return raw;
   if (raw && Array.isArray(raw.products)) return raw.products;
@@ -109,6 +111,7 @@ export default function Page() {
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // ✅ Initialisation Telegram (ne bloque PAS sur user.id)
   useEffect(() => {
     const w = getWebApp();
     if (!w) return;
@@ -118,6 +121,7 @@ export default function Page() {
     } catch {}
   }, []);
 
+  // ✅ Chargement catalogue
   useEffect(() => {
     const url = `${CATALOG_URL}?v=${Date.now()}`;
     fetch(url, { cache: "no-store" })
@@ -184,18 +188,20 @@ export default function Page() {
         .filter((x) => x.qty > 0)
     );
   }
+
   function inc(key) {
     setCart((prev) => prev.map((x) => (x.key === key ? { ...x, qty: x.qty + 1 } : x)));
   }
 
   function sendOrderToBot() {
     const w = getWebApp();
-    const user = w?.initDataUnsafe?.user;
 
-    if (!w || !user?.id) {
-      alert("Ouvrez via Telegram (Mini App), pas navigateur.");
+    // ✅ LA SEULE condition : être dans Telegram WebApp
+    if (!w) {
+      alert("Mini-App Telegram non détectée. Ouvrez depuis le bot.");
       return;
     }
+
     if (!cart.length || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -213,16 +219,21 @@ export default function Page() {
     };
 
     try {
+      // ✅ Envoi au bot (message web_app_data)
       w.sendData(JSON.stringify(payload));
-      w.showAlert("✅ Commande envoyée au bot. Retour au chat...", () => {
-        try { w.close(); } catch {}
+
+      w.showAlert("✅ Commande envoyée au bot. Retour au chat…", () => {
+        try {
+          w.close();
+        } catch {}
       });
+
       setCart([]);
     } catch (e) {
       console.error(e);
       alert("Erreur envoi au bot.");
     } finally {
-      setTimeout(() => setIsSubmitting(false), 500);
+      setTimeout(() => setIsSubmitting(false), 600);
     }
   }
 
@@ -244,7 +255,11 @@ export default function Page() {
 
       <div className="cats">
         {categories.map((c) => (
-          <button key={c} onClick={() => setCat(c)} className={`chip ${c === cat ? "active" : ""}`}>
+          <button
+            key={c}
+            onClick={() => setCat(c)}
+            className={`chip ${c === cat ? "active" : ""}`}
+          >
             {c}
           </button>
         ))}
@@ -256,13 +271,20 @@ export default function Page() {
             {p.photo ? <img className="img" src={p.photo} alt={p.nom} /> : null}
             <div className="cardBody">
               <div className="name">{p.nom}</div>
-              <div className="meta">{p.categorie}{p.poids ? ` • ${p.poids}` : ""}</div>
+              <div className="meta">
+                {p.categorie}
+                {p.poids ? ` • ${p.poids}` : ""}
+              </div>
               <div className="row">
                 <div className="price">{euro(p.prix)} €</div>
                 {p.options?.length ? (
-                  <button className="btn" onClick={() => openOptions(p)}>⚙️ Options</button>
+                  <button className="btn" onClick={() => openOptions(p)}>
+                    ⚙️ Options
+                  </button>
                 ) : (
-                  <button className="btn" onClick={() => addToCart(p, {})}>➕ Ajouter</button>
+                  <button className="btn" onClick={() => addToCart(p, {})}>
+                    ➕ Ajouter
+                  </button>
                 )}
               </div>
             </div>
@@ -287,23 +309,33 @@ export default function Page() {
                   {i.selected && Object.keys(i.selected).length > 0 && (
                     <div className="opts">
                       {Object.entries(i.selected).map(([k, v]) => (
-                        <span key={k} className="optTag">{k}: {String(v)}</span>
+                        <span key={k} className="optTag">
+                          {k}: {String(v)}
+                        </span>
                       ))}
                     </div>
                   )}
                   <div className="muted">{euro(i.unitPrice)} € / unité</div>
                 </div>
                 <div className="qty">
-                  <button className="qbtn" onClick={() => dec(i.key)}>−</button>
+                  <button className="qbtn" onClick={() => dec(i.key)}>
+                    −
+                  </button>
                   <div className="qnum">{i.qty}</div>
-                  <button className="qbtn" onClick={() => inc(i.key)}>+</button>
+                  <button className="qbtn" onClick={() => inc(i.key)}>
+                    +
+                  </button>
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        <button className="checkout" disabled={!cart.length || isSubmitting} onClick={sendOrderToBot}>
+        <button
+          className="checkout"
+          disabled={!cart.length || isSubmitting}
+          onClick={sendOrderToBot}
+        >
           {isSubmitting ? "⏳ Envoi…" : "✅ Commander (Bitcoin / Transcash)"}
         </button>
       </div>
@@ -316,7 +348,9 @@ export default function Page() {
                 <div className="modalTitle">{openProduct.nom}</div>
                 <div className="muted">Choisissez vos options</div>
               </div>
-              <button className="close" onClick={() => setOpenProduct(null)}>✕</button>
+              <button className="close" onClick={() => setOpenProduct(null)}>
+                ✕
+              </button>
             </div>
 
             {(openProduct.options || []).map((opt) => (
@@ -330,7 +364,9 @@ export default function Page() {
                         <button
                           key={c.label}
                           className={`choice ${active ? "active" : ""}`}
-                          onClick={() => setSelected((s) => ({ ...s, [opt.name]: c.label }))}
+                          onClick={() =>
+                            setSelected((s) => ({ ...s, [opt.name]: c.label }))
+                          }
                         >
                           {c.label}
                           {Number(c.priceDelta || 0) !== 0 && (
