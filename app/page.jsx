@@ -15,12 +15,6 @@ function euro(n) {
   return Number(n || 0).toFixed(2);
 }
 
-function normalizeFallback(raw) {
-  if (Array.isArray(raw)) return raw;
-  if (raw && Array.isArray(raw.products)) return raw.products;
-  return [];
-}
-
 // Proxy image via ton domaine Next.js (évite blocages Telegram)
 function proxifyImage(url) {
   if (!url || typeof url !== "string") return "";
@@ -79,6 +73,7 @@ function mapApiToUi(api) {
       }
     }
 
+    // sans variantes
     out.push({
       id: String(p.id),
       nom: p.title || "Produit",
@@ -92,6 +87,13 @@ function mapApiToUi(api) {
     });
   }
   return out;
+}
+
+// Fallback robuste : accepte array UI ou JSON API (categories/products)
+function normalizeFallback(raw) {
+  if (Array.isArray(raw)) return raw; // déjà mappé UI
+  if (raw && Array.isArray(raw.products)) return mapApiToUi(raw);
+  return [];
 }
 
 function calcPrice(product, selected) {
@@ -124,7 +126,7 @@ export default function Page() {
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // cache-buster stable (évite Date.now dans chaque <img>)
+  // cache-buster stable
   const [imgBust, setImgBust] = useState(Date.now());
 
   // Telegram init
@@ -136,6 +138,28 @@ export default function Page() {
       w.expand();
     } catch {}
   }, []);
+
+  // Bloquer le scroll derrière la modal (important sur mobile)
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+
+    if (openProduct) {
+      html.style.overflow = "hidden";
+      body.style.overflow = "hidden";
+      body.style.touchAction = "none";
+    } else {
+      html.style.overflow = "";
+      body.style.overflow = "";
+      body.style.touchAction = "";
+    }
+
+    return () => {
+      html.style.overflow = "";
+      body.style.overflow = "";
+      body.style.touchAction = "";
+    };
+  }, [openProduct]);
 
   // Load catalog
   useEffect(() => {
@@ -180,7 +204,6 @@ export default function Page() {
     setOpenProduct(p);
   }
 
-  // ✅ Ajout “intelligent” : si options => ouvre Infos, sinon ajoute direct
   function quickAddOrOpen(product) {
     if (product?.options?.length) {
       openInfos(product);
@@ -333,12 +356,10 @@ export default function Page() {
                 <div className="price">{euro(p.prix)} €</div>
 
                 <div className="actions">
-                  {/* ✅ On garde uniquement Infos */}
                   <button className="btn ghost" onClick={() => openInfos(p)}>
                     ℹ️ Infos
                   </button>
 
-                  {/* ✅ Plus de bouton “Options” : on met “Ajouter” qui ouvre Infos si options */}
                   <button className="btn" onClick={() => quickAddOrOpen(p)}>
                     ➕ Ajouter
                   </button>
@@ -578,7 +599,7 @@ export default function Page() {
         .row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;}
         .price{font-weight:900;font-size:18px;}
 
-        /* ✅ Anti-tronquage boutons */
+        /* Anti-tronquage boutons */
         .actions{
           display:flex;
           gap:8px;
@@ -597,10 +618,9 @@ export default function Page() {
           cursor:pointer;
           white-space:nowrap;
           min-width:0;
-          flex:1 1 120px; /* ✅ permet de shrink + wrap */
+          flex:1 1 120px;
         }
         .btn.ghost{background:transparent;}
-
         @media (max-width: 380px){
           .actions{
             flex-direction:column;
@@ -618,6 +638,7 @@ export default function Page() {
           backdrop-filter:blur(10px);
           border-top:1px solid var(--stroke);
           padding:12px 14px;
+          padding-bottom: calc(12px + env(safe-area-inset-bottom));
         }
         .cartTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
         .cartTitle,.cartTotal{font-weight:900;}
@@ -656,27 +677,46 @@ export default function Page() {
         }
         .checkout:disabled{opacity:.5;cursor:not-allowed;}
 
+        /* ✅ MODAL SCROLLABLE (bottom-sheet) */
         .modalBack{
-          position:fixed;inset:0;
+          position:fixed;
+          inset:0;
           background:rgba(0,0,0,.6);
-          display:grid;
-          place-items:center;
+
+          display:flex;
+          justify-content:center;
+          align-items:flex-end;
+
+          overflow:auto;
+          -webkit-overflow-scrolling: touch;
+          overscroll-behavior: contain;
+
           padding:14px;
+          padding-bottom: calc(14px + env(safe-area-inset-bottom));
         }
         .modal{
           width:min(560px,100%);
           background:var(--card);
           border:1px solid var(--stroke);
           border-radius:18px;
-          overflow:hidden;
+
+          max-height: calc(100vh - 28px - env(safe-area-inset-bottom));
+          overflow:auto;
+          -webkit-overflow-scrolling: touch;
         }
         .modalHead{
+          position: sticky;
+          top: 0;
+          z-index: 5;
+
           display:flex;
           justify-content:space-between;
           align-items:flex-start;
           padding:12px;
           border-bottom:1px solid var(--stroke);
           gap:10px;
+
+          background: var(--card);
         }
         .modalTitle{font-weight:900;margin-bottom:4px;}
         .close{
@@ -691,7 +731,7 @@ export default function Page() {
         .modalImgWrap{position:relative;}
         .modalImg{
           width:100%;
-          height:320px;
+          height: min(320px, 35vh);
           object-fit:cover;
           display:block;
           background:rgba(255,255,255,.04);
@@ -743,11 +783,18 @@ export default function Page() {
         .delta{opacity:.85;font-size:12px;}
 
         .modalFoot{
+          position: sticky;
+          bottom: 0;
+          z-index: 5;
+
           padding:12px;
           display:flex;
           justify-content:space-between;
           align-items:center;
           gap:10px;
+
+          background: var(--card);
+          border-top: 1px solid var(--stroke);
         }
         .finalPrice{font-weight:900;}
         .cta{
