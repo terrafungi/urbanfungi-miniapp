@@ -1,24 +1,15 @@
-// app/api/catalog/route.js
-import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-
-export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
-  try {
-    const filePath = path.join(process.cwd(), "app", "products.json");
-    const raw = fs.readFileSync(filePath, "utf8");
-    const data = JSON.parse(raw);
+  const url = "https://urbfgi.fun/api/catalog.php";
+  const r = await fetch(url, { cache: "no-store" });
+  const txt = await r.text();
 
-    return NextResponse.json(data, {
-      status: 200,
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch (e) {
-    return NextResponse.json(
-      { categories: [], products: [] },
-      { status: 200 }
-    );
-  }
+  return new Response(txt, {
+    status: r.status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
 }
