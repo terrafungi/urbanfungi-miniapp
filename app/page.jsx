@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import fallbackRaw from "./products.json";
 
-// ✅ On passe par l’API Next (même domaine) pour éviter CORS / Telegram WebView
-const CATALOG_URL = process.env.NEXT_PUBLIC_CATALOG_URL || "/api/catalog";
+const CATALOG_URL =
+  process.env.NEXT_PUBLIC_CATALOG_URL || "https://urbfgi.fun/api/catalog.php";
 
 function getWebApp() {
   if (typeof window === "undefined") return null;
@@ -15,19 +15,15 @@ function euro(n) {
   return Number(n || 0).toFixed(2);
 }
 
-function normalizeFallback(raw) {
-  // fallback peut être un array de produits UI ou un objet { products: [...] }
-  if (Array.isArray(raw)) return raw;
-  if (raw && Array.isArray(raw.products)) return raw.products;
-  return [];
-}
-
-// ✅ Proxy image via Next => pas de blocage dans Telegram
-function proxiedImg(url) {
+// ✅ Proxy image via ton domaine Next.js (évite les blocages Telegram)
+function proxifyImage(url) {
   if (!url) return "";
+  if (typeof url !== "string") return "";
+  if (!url.startsWith("http")) return url; // déjà local (/...)
   return `/api/img?u=${encodeURIComponent(url)}`;
 }
 
+// ✅ Map API catalog.php -> UI products
 function mapApiToUi(api) {
   const cats = Array.isArray(api?.categories) ? api.categories : [];
   const catById = new Map(cats.map((c) => [String(c.id), c]));
@@ -37,9 +33,10 @@ function mapApiToUi(api) {
   for (const p of products) {
     if (!p || p.active === false) continue;
 
-    const catName = p.category || catById.get(String(p.categoryId))?.name || "Autres";
+    const catName =
+      p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
-    // Variantes => option select
+    // ✅ produit avec variantes => select
     if (Array.isArray(p.variants) && p.variants.length) {
       const vars = p.variants.filter((v) => v?.active !== false);
       if (vars.length) {
@@ -49,7 +46,8 @@ function mapApiToUi(api) {
         out.push({
           id: String(p.id),
           nom: p.title || "Produit",
-          photo: p.image || "",
+          photo: proxifyImage(p.image || ""),
+          rawPhoto: p.image || "",
           categorie: catName,
           prix: Number(minPrice.toFixed(2)),
           poids: p.weight || "",
@@ -64,7 +62,7 @@ function mapApiToUi(api) {
                 return {
                   label: v.label || v.weight || "Option",
                   priceDelta: Number((price - minPrice).toFixed(2)),
-                  variantId: String(v.id),
+                  variantId: v.id,
                 };
               }),
             },
@@ -74,10 +72,12 @@ function mapApiToUi(api) {
       }
     }
 
+    // ✅ produit simple
     out.push({
       id: String(p.id),
       nom: p.title || "Produit",
-      photo: p.image || "",
+      photo: proxifyImage(p.image || ""),
+      rawPhoto: p.image || "",
       categorie: catName,
       prix: Number(Number(p.salePrice ?? p.price ?? 0).toFixed(2)),
       poids: p.weight || "",
@@ -85,6 +85,13 @@ function mapApiToUi(api) {
     });
   }
   return out;
+}
+
+// ✅ fallback : accepte soit un tableau UI, soit un objet {products:[...]}
+function normalizeFallbackToUi(raw) {
+  if (Array.isArray(raw)) return raw; // on suppose déjà au format UI
+  if (raw && (raw.products || raw.categories)) return mapApiToUi(raw);
+  return [];
 }
 
 function calcPrice(product, selected) {
@@ -108,16 +115,17 @@ function variantKey(productId, selected) {
 }
 
 export default function Page() {
-  const initialFallback = useMemo(() => normalizeFallback(fallbackRaw), []);
-  const [products, setProducts] = useState(initialFallback);
+  const cacheBust = useMemo(() => Date.now(), []);
+  const fallbackUi = useMemo(() => normalizeFallbackToUi(fallbackRaw), []);
 
+  const [products, setProducts] = useState(fallbackUi);
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]);
   const [openProduct, setOpenProduct] = useState(null);
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // ✅ Init Telegram
+  // ✅ Telegram init
   useEffect(() => {
     const w = getWebApp();
     if (!w) return;
@@ -127,7 +135,7 @@ export default function Page() {
     } catch {}
   }, []);
 
-  // ✅ Chargement catalogue via proxy Next
+  // ✅ Load catalog
   useEffect(() => {
     const url = `${CATALOG_URL}?v=${Date.now()}`;
     fetch(url, { cache: "no-store" })
@@ -178,7 +186,10 @@ export default function Page() {
         next[idx] = { ...next[idx], qty: next[idx].qty + 1 };
         return next;
       }
-      return [...prev, { key, id: product.id, nom: product.nom, unitPrice, selected: sel, qty: 1 }];
+      return [
+        ...prev,
+        { key, id: product.id, nom: product.nom, unitPrice, selected: sel, qty: 1 },
+      ];
     });
 
     setOpenProduct(null);
@@ -186,7 +197,9 @@ export default function Page() {
 
   function dec(key) {
     setCart((prev) =>
-      prev.map((x) => (x.key === key ? { ...x, qty: x.qty - 1 } : x)).filter((x) => x.qty > 0)
+      prev
+        .map((x) => (x.key === key ? { ...x, qty: x.qty - 1 } : x))
+        .filter((x) => x.qty > 0)
     );
   }
 
@@ -196,10 +209,12 @@ export default function Page() {
 
   function sendOrderToBot() {
     const w = getWebApp();
+
     if (!w) {
       alert("Mini-App Telegram non détectée. Ouvrez depuis le bot.");
       return;
     }
+
     if (!cart.length || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -218,11 +233,13 @@ export default function Page() {
 
     try {
       w.sendData(JSON.stringify(payload));
+
       w.showAlert("✅ Commande envoyée au bot. Retour au chat…", () => {
         try {
           w.close();
         } catch {}
       });
+
       setCart([]);
     } catch (e) {
       console.error(e);
@@ -250,7 +267,11 @@ export default function Page() {
 
       <div className="cats">
         {categories.map((c) => (
-          <button key={c} onClick={() => setCat(c)} className={`chip ${c === cat ? "active" : ""}`}>
+          <button
+            key={c}
+            onClick={() => setCat(c)}
+            className={`chip ${c === cat ? "active" : ""}`}
+          >
             {c}
           </button>
         ))}
@@ -258,12 +279,36 @@ export default function Page() {
 
       <div className="grid">
         {filtered.map((p) => {
-          const img = p.photo ? proxiedImg(p.photo) : "";
+          const imgSrc = p.photo ? `${p.photo}&v=${cacheBust}` : "";
           return (
             <div key={p.id} className="card">
-              {/* ✅ Emplacement photo TOUJOURS présent */}
+              {/* ✅ Zone image TOUJOURS présente */}
               <div className="imgWrap">
-                {img ? <img className="img" src={img} alt={p.nom} /> : <div className="imgPh" />}
+                {imgSrc ? (
+                  <img
+                    className="img"
+                    src={imgSrc}
+                    alt={p.nom}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      // fallback 1 : essaye l’URL brute une seule fois
+                      const el = e.currentTarget;
+                      if (el.dataset.fallback === "1") {
+                        el.style.display = "none"; // si ça rate encore
+                        return;
+                      }
+                      if (p.rawPhoto && typeof p.rawPhoto === "string") {
+                        el.dataset.fallback = "1";
+                        el.src = p.rawPhoto;
+                        return;
+                      }
+                      el.style.display = "none";
+                    }}
+                  />
+                ) : (
+                  <div className="imgPh">Aucune photo</div>
+                )}
               </div>
 
               <div className="cardBody">
@@ -272,7 +317,6 @@ export default function Page() {
                   {p.categorie}
                   {p.poids ? ` • ${p.poids}` : ""}
                 </div>
-
                 <div className="row">
                   <div className="price">{euro(p.prix)} €</div>
                   {p.options?.length ? (
@@ -330,7 +374,11 @@ export default function Page() {
           </div>
         )}
 
-        <button className="checkout" disabled={!cart.length || isSubmitting} onClick={sendOrderToBot}>
+        <button
+          className="checkout"
+          disabled={!cart.length || isSubmitting}
+          onClick={sendOrderToBot}
+        >
           {isSubmitting ? "⏳ Envoi…" : "✅ Commander (Bitcoin / Transcash)"}
         </button>
       </div>
@@ -359,7 +407,9 @@ export default function Page() {
                         <button
                           key={c.label}
                           className={`choice ${active ? "active" : ""}`}
-                          onClick={() => setSelected((s) => ({ ...s, [opt.name]: c.label }))}
+                          onClick={() =>
+                            setSelected((s) => ({ ...s, [opt.name]: c.label }))
+                          }
                         >
                           {c.label}
                           {Number(c.priceDelta || 0) !== 0 && (
@@ -388,60 +438,60 @@ export default function Page() {
       )}
 
       <style jsx global>{`
-        :root { --bg:#0b0b0f; --card:#12121a; --stroke:rgba(255,255,255,.08); --txt:#fff; }
-        html,body { background:var(--bg); color:var(--txt); margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; }
-        .wrap { padding:14px; padding-bottom:120px; }
-        .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
-        .brand { display:flex; align-items:center; gap:10px; }
-        .logo { width:38px; height:38px; border-radius:12px; background:var(--card); display:grid; place-items:center; border:1px solid var(--stroke); }
-        .title { font-weight:900; line-height:1.1; }
-        .subtitle { opacity:.7; font-size:12px; }
-        .totalPill { background:var(--card); border:1px solid var(--stroke); border-radius:14px; padding:8px 10px; min-width:120px; text-align:right; }
-        .muted { opacity:.7; font-size:12px; }
-        .big { font-weight:900; }
-        .cats { display:flex; gap:8px; overflow:auto; padding-bottom:8px; margin-bottom:10px; }
-        .chip { border:1px solid var(--stroke); background:transparent; color:var(--txt); padding:8px 10px; border-radius:999px; white-space:nowrap; }
-        .chip.active { background:rgba(255,255,255,.12); }
-        .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-        @media (min-width:900px){ .grid{ grid-template-columns:repeat(4,minmax(0,1fr)); } }
-        .card { background:var(--card); border:1px solid var(--stroke); border-radius:16px; overflow:hidden; }
-        .imgWrap { width:100%; height:140px; background:rgba(255,255,255,.04); }
-        .img { width:100%; height:140px; object-fit:cover; display:block; }
-        .imgPh { width:100%; height:140px; }
-        .cardBody { padding:10px; }
-        .name { font-weight:900; margin-bottom:6px; }
-        .meta { opacity:.75; font-size:12px; margin-bottom:10px; }
-        .row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-        .price { font-weight:900; }
-        .btn { border:1px solid var(--stroke); background:rgba(255,255,255,.06); color:var(--txt); padding:8px 10px; border-radius:12px; font-weight:800; }
-        .cart { position:fixed; left:0; right:0; bottom:0; background:rgba(11,11,15,.85); backdrop-filter:blur(10px); border-top:1px solid var(--stroke); padding:12px 14px; }
-        .cartTop { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
-        .cartTitle,.cartTotal { font-weight:900; }
-        .empty { opacity:.7; font-size:13px; padding:6px 0 10px; }
-        .cartList { max-height:180px; overflow:auto; padding-right:6px; margin-bottom:10px; }
-        .cartRow { display:flex; justify-content:space-between; gap:10px; border:1px solid var(--stroke); border-radius:14px; padding:10px; margin-bottom:8px; background:rgba(255,255,255,.04); }
-        .cartName { font-weight:900; margin-bottom:4px; }
-        .opts { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
-        .optTag { font-size:11px; border:1px solid var(--stroke); border-radius:999px; padding:3px 8px; opacity:.85; }
-        .qty { display:flex; align-items:center; gap:8px; }
-        .qbtn { width:34px; height:34px; border-radius:12px; border:1px solid var(--stroke); background:rgba(255,255,255,.06); color:var(--txt); font-size:18px; font-weight:900; }
-        .qnum { min-width:18px; text-align:center; font-weight:900; }
-        .checkout { width:100%; border:none; background:#22c55e; color:#0b0b0f; font-weight:900; padding:12px 14px; border-radius:14px; cursor:pointer; }
-        .checkout:disabled { opacity:.5; cursor:not-allowed; }
-        .modalBack { position:fixed; inset:0; background:rgba(0,0,0,.6); display:grid; place-items:center; padding:14px; }
-        .modal { width:min(520px,100%); background:var(--card); border:1px solid var(--stroke); border-radius:18px; overflow:hidden; }
-        .modalHead { display:flex; justify-content:space-between; align-items:start; padding:12px; border-bottom:1px solid var(--stroke); }
-        .modalTitle { font-weight:900; margin-bottom:4px; }
-        .close { border:1px solid var(--stroke); background:rgba(255,255,255,.06); color:var(--txt); border-radius:12px; padding:8px 10px; }
-        .optBlock { padding:12px; border-bottom:1px solid var(--stroke); }
-        .optName { font-weight:900; margin-bottom:8px; }
-        .choices { display:flex; flex-wrap:wrap; gap:8px; }
-        .choice { border:1px solid var(--stroke); background:rgba(255,255,255,.05); color:var(--txt); padding:10px 12px; border-radius:14px; font-weight:900; display:flex; align-items:center; gap:8px; }
-        .choice.active { background:rgba(34,197,94,.22); border-color:rgba(34,197,94,.5); }
-        .delta { opacity:.85; font-size:12px; }
-        .modalFoot { padding:12px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
-        .finalPrice { font-weight:900; }
-        .cta { border:none; background:#22c55e; color:#0b0b0f; font-weight:900; padding:10px 12px; border-radius:14px; cursor:pointer; }
+        :root{--bg:#0b0b0f;--card:#12121a;--stroke:rgba(255,255,255,.08);--txt:#fff;}
+        html,body{background:var(--bg);color:var(--txt);margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+        .wrap{padding:14px;padding-bottom:120px;}
+        .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;}
+        .brand{display:flex;align-items:center;gap:10px;}
+        .logo{width:38px;height:38px;border-radius:12px;background:var(--card);display:grid;place-items:center;border:1px solid var(--stroke);}
+        .title{font-weight:900;line-height:1.1;}
+        .subtitle{opacity:.7;font-size:12px;}
+        .totalPill{background:var(--card);border:1px solid var(--stroke);border-radius:14px;padding:8px 10px;min-width:120px;text-align:right;}
+        .muted{opacity:.7;font-size:12px;}
+        .big{font-weight:900;}
+        .cats{display:flex;gap:8px;overflow:auto;padding-bottom:8px;margin-bottom:10px;}
+        .chip{border:1px solid var(--stroke);background:transparent;color:var(--txt);padding:8px 10px;border-radius:999px;white-space:nowrap;}
+        .chip.active{background:rgba(255,255,255,.12);}
+        .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+        @media (min-width:900px){.grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
+        .card{background:var(--card);border:1px solid var(--stroke);border-radius:16px;overflow:hidden;}
+        .imgWrap{width:100%;height:140px;background:rgba(255,255,255,.04);display:block;}
+        .img{width:100%;height:140px;object-fit:cover;display:block;}
+        .imgPh{height:140px;display:grid;place-items:center;opacity:.6;font-size:12px;}
+        .cardBody{padding:10px;}
+        .name{font-weight:900;margin-bottom:6px;}
+        .meta{opacity:.75;font-size:12px;margin-bottom:10px;}
+        .row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+        .price{font-weight:900;}
+        .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);padding:8px 10px;border-radius:12px;font-weight:800;}
+        .cart{position:fixed;left:0;right:0;bottom:0;background:rgba(11,11,15,.85);backdrop-filter:blur(10px);border-top:1px solid var(--stroke);padding:12px 14px;}
+        .cartTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+        .cartTitle,.cartTotal{font-weight:900;}
+        .empty{opacity:.7;font-size:13px;padding:6px 0 10px;}
+        .cartList{max-height:180px;overflow:auto;padding-right:6px;margin-bottom:10px;}
+        .cartRow{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--stroke);border-radius:14px;padding:10px;margin-bottom:8px;background:rgba(255,255,255,.04);}
+        .cartName{font-weight:900;margin-bottom:4px;}
+        .opts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
+        .optTag{font-size:11px;border:1px solid var(--stroke);border-radius:999px;padding:3px 8px;opacity:.85;}
+        .qty{display:flex;align-items:center;gap:8px;}
+        .qbtn{width:34px;height:34px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);font-size:18px;font-weight:900;}
+        .qnum{min-width:18px;text-align:center;font-weight:900;}
+        .checkout{width:100%;border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:12px 14px;border-radius:14px;cursor:pointer;}
+        .checkout:disabled{opacity:.5;cursor:not-allowed;}
+        .modalBack{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:14px;}
+        .modal{width:min(520px,100%);background:var(--card);border:1px solid var(--stroke);border-radius:18px;overflow:hidden;}
+        .modalHead{display:flex;justify-content:space-between;align-items:start;padding:12px;border-bottom:1px solid var(--stroke);}
+        .modalTitle{font-weight:900;margin-bottom:4px;}
+        .close{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);border-radius:12px;padding:8px 10px;}
+        .optBlock{padding:12px;border-bottom:1px solid var(--stroke);}
+        .optName{font-weight:900;margin-bottom:8px;}
+        .choices{display:flex;flex-wrap:wrap;gap:8px;}
+        .choice{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--txt);padding:10px 12px;border-radius:14px;font-weight:900;display:flex;align-items:center;gap:8px;}
+        .choice.active{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.5);}
+        .delta{opacity:.85;font-size:12px;}
+        .modalFoot{padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;}
+        .finalPrice{font-weight:900;}
+        .cta{border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:10px 12px;border-radius:14px;cursor:pointer;}
       `}</style>
     </div>
   );
