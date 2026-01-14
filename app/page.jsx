@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import fallbackRaw from "./products.json";
 
 const CATALOG_URL =
-  process.env.NEXT_PUBLIC_CATALOG_URL || "/api/catalog.php"; // ✅ même domaine (Render)
-
+  process.env.NEXT_PUBLIC_CATALOG_URL ||
+  "https://urbfgi.fun/api/catalog.php";
 function getWebApp() {
   if (typeof window === "undefined") return null;
   return window.Telegram?.WebApp ?? null;
