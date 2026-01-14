@@ -1,66 +1,45 @@
 // app/catalogSource.js
-const API_URL = "https://urbfgi.fun/api/catalog.php";
 
-function slugify(s) {
-  return String(s || "")
-    .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+export const CATALOG_URL = (
+  process.env.NEXT_PUBLIC_CATALOG_URL || "https://urbfgi.fun/api/catalog.php"
+).trim();
+
+function getOriginFromCatalogUrl() {
+  try {
+    return new URL(CATALOG_URL).origin; // => https://urbfgi.fun
+  } catch {
+    return "https://urbfgi.fun";
+  }
 }
 
-// ⚠️ Cette fonction renvoie un format “compatible ancien product.json”
-// -> categories: [{name, slug}]
-// -> products: [{id, title, category, price, weight, image, description...}]
-export async function loadCatalog() {
-  const url = `${API_URL}?v=${Date.now()}`; // anti-cache Telegram/GitHub
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`Catalog HTTP ${r.status}`);
-  const api = await r.json();
+export function normalizeImageUrl(value) {
+  const origin = getOriginFromCatalogUrl();
+  if (!value) return "";
 
-  const categories = (api.categories || []).map((c) => {
-    if (typeof c === "string") return { name: c, slug: slugify(c) };
-    return { name: c.name, slug: c.slug || slugify(c.name), id: c.id };
-  });
+  const v = String(value).trim();
 
-  const products = [];
-  for (const p of (api.products || [])) {
-    if (p?.active === false) continue;
+  // déjà absolu
+  if (/^https?:\/\//i.test(v)) return v;
 
-    // Si variantes: on “aplatit” pour que ton panier actuel marche sans refonte UI
-    if (Array.isArray(p.variants) && p.variants.length > 0) {
-      for (const v of p.variants) {
-        if (v?.active === false) continue;
-        products.push({
-          id: `${p.id}-${v.id}`,                  // id unique
-          parentId: p.id,
-          variantId: v.id,
-          title: `${p.title} — ${v.label}`,
-          category: p.category || null,
-          categoryId: p.categoryId || null,
-          price: (v.salePrice ?? v.price) ?? p.price,
-          weight: v.weight || v.label || p.weight || "",
-          image: p.image || "",
-          description: p.shortDesc || p.longDesc || "",
-          link: p.link || "",
-          currency: p.currency || "EUR",
-        });
-      }
-    } else {
-      products.push({
-        id: String(p.id),
-        title: p.title,
-        category: p.category || null,
-        categoryId: p.categoryId || null,
-        price: (p.salePrice ?? p.price),
-        weight: p.weight || "",
-        image: p.image || "",
-        description: p.shortDesc || p.longDesc || "",
-        link: p.link || "",
-        currency: p.currency || "EUR",
-      });
-    }
-  }
+  // //urbfgi.fun/...
+  if (v.startsWith("//")) return "https:" + v;
 
-  return { categories, products };
+  // /uploads/xxx.jpg
+  if (v.startsWith("/")) return origin + v;
+
+  // uploads/xxx.jpg ou juste nom de fichier
+  // si ton PHP stocke déjà "uploads/xxx.jpg" on le garde tel quel
+  if (v.startsWith("uploads/")) return `${origin}/${v}`;
+
+  // sinon on suppose que c'est dans /uploads/
+  return `${origin}/uploads/${v}`;
+}
+
+export async function fetchCatalog() {
+  const url = `${CATALOG_URL}${CATALOG_URL.includes("?") ? "&" : "?"}t=${Date.now()}`;
+
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Catalog HTTP ${res.status}`);
+
+  return res.json();
 }
