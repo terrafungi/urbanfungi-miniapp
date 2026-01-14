@@ -15,15 +15,19 @@ function euro(n) {
   return Number(n || 0).toFixed(2);
 }
 
-// ✅ Proxy image via ton domaine Next.js (évite les blocages Telegram)
+function normalizeFallback(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (raw && Array.isArray(raw.products)) return raw.products;
+  return [];
+}
+
+// ✅ Proxy image via ton domaine Next.js
 function proxifyImage(url) {
-  if (!url) return "";
-  if (typeof url !== "string") return "";
-  if (!url.startsWith("http")) return url; // déjà local (/...)
+  if (!url || typeof url !== "string") return "";
+  if (!url.startsWith("http")) return url;
   return `/api/img?u=${encodeURIComponent(url)}`;
 }
 
-// ✅ Map API catalog.php -> UI products
 function mapApiToUi(api) {
   const cats = Array.isArray(api?.categories) ? api.categories : [];
   const catById = new Map(cats.map((c) => [String(c.id), c]));
@@ -36,7 +40,7 @@ function mapApiToUi(api) {
     const catName =
       p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
-    // ✅ produit avec variantes => select
+    // variantes => option select
     if (Array.isArray(p.variants) && p.variants.length) {
       const vars = p.variants.filter((v) => v?.active !== false);
       if (vars.length) {
@@ -62,7 +66,7 @@ function mapApiToUi(api) {
                 return {
                   label: v.label || v.weight || "Option",
                   priceDelta: Number((price - minPrice).toFixed(2)),
-                  variantId: v.id,
+                  variantId: String(v.id ?? ""),
                 };
               }),
             },
@@ -72,7 +76,6 @@ function mapApiToUi(api) {
       }
     }
 
-    // ✅ produit simple
     out.push({
       id: String(p.id),
       nom: p.title || "Produit",
@@ -84,14 +87,8 @@ function mapApiToUi(api) {
       options: Array.isArray(p.options) ? p.options : [],
     });
   }
-  return out;
-}
 
-// ✅ fallback : accepte soit un tableau UI, soit un objet {products:[...]}
-function normalizeFallbackToUi(raw) {
-  if (Array.isArray(raw)) return raw; // on suppose déjà au format UI
-  if (raw && (raw.products || raw.categories)) return mapApiToUi(raw);
-  return [];
+  return out;
 }
 
 function calcPrice(product, selected) {
@@ -114,16 +111,31 @@ function variantKey(productId, selected) {
   return `${productId}::${JSON.stringify(selected || {})}`;
 }
 
-export default function Page() {
-  const cacheBust = useMemo(() => Date.now(), []);
-  const fallbackUi = useMemo(() => normalizeFallbackToUi(fallbackRaw), []);
+function openLinkSafe(url) {
+  if (!url) return;
+  const w = getWebApp();
+  try {
+    if (w?.openLink) w.openLink(url);
+    else window.open(url, "_blank");
+  } catch {
+    try {
+      window.open(url, "_blank");
+    } catch {}
+  }
+}
 
-  const [products, setProducts] = useState(fallbackUi);
+export default function Page() {
+  const initialFallback = useMemo(() => normalizeFallback(fallbackRaw), []);
+  const [products, setProducts] = useState(initialFallback);
+
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]);
   const [openProduct, setOpenProduct] = useState(null);
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // img errors: { [productId]: true }
+  const [imgFailed, setImgFailed] = useState({});
 
   // ✅ Telegram init
   useEffect(() => {
@@ -188,7 +200,14 @@ export default function Page() {
       }
       return [
         ...prev,
-        { key, id: product.id, nom: product.nom, unitPrice, selected: sel, qty: 1 },
+        {
+          key,
+          id: product.id,
+          nom: product.nom,
+          unitPrice,
+          selected: sel,
+          qty: 1,
+        },
       ];
     });
 
@@ -214,7 +233,6 @@ export default function Page() {
       alert("Mini-App Telegram non détectée. Ouvrez depuis le bot.");
       return;
     }
-
     if (!cart.length || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -233,13 +251,11 @@ export default function Page() {
 
     try {
       w.sendData(JSON.stringify(payload));
-
       w.showAlert("✅ Commande envoyée au bot. Retour au chat…", () => {
         try {
           w.close();
         } catch {}
       });
-
       setCart([]);
     } catch (e) {
       console.error(e);
@@ -259,6 +275,7 @@ export default function Page() {
             <div className="subtitle">Boutique • Mini App</div>
           </div>
         </div>
+
         <div className="totalPill">
           <div className="muted">Total</div>
           <div className="big">{euro(total)} €</div>
@@ -279,36 +296,38 @@ export default function Page() {
 
       <div className="grid">
         {filtered.map((p) => {
-          const imgSrc = p.photo ? `${p.photo}&v=${cacheBust}` : "";
+          const failed = !!imgFailed[p.id];
+          const hasImg = !!p.photo;
+
           return (
             <div key={p.id} className="card">
-              {/* ✅ Zone image TOUJOURS présente */}
               <div className="imgWrap">
-                {imgSrc ? (
+                {hasImg && !failed ? (
                   <img
                     className="img"
-                    src={imgSrc}
+                    src={p.photo}
                     alt={p.nom}
                     loading="lazy"
                     referrerPolicy="no-referrer"
-                    onError={(e) => {
-                      // fallback 1 : essaye l’URL brute une seule fois
-                      const el = e.currentTarget;
-                      if (el.dataset.fallback === "1") {
-                        el.style.display = "none"; // si ça rate encore
-                        return;
-                      }
-                      if (p.rawPhoto && typeof p.rawPhoto === "string") {
-                        el.dataset.fallback = "1";
-                        el.src = p.rawPhoto;
-                        return;
-                      }
-                      el.style.display = "none";
-                    }}
+                    onError={() => setImgFailed((s) => ({ ...s, [p.id]: true }))}
                   />
                 ) : (
-                  <div className="imgPh">Aucune photo</div>
+                  <div className="imgPh">
+                    <div className="phIcon">🍄</div>
+                    <div className="phTxt">Image non chargée</div>
+                  </div>
                 )}
+
+                {/* ✅ Bouton lien (toujours présent si rawPhoto existe) */}
+                {p.rawPhoto ? (
+                  <button
+                    className="imgLink"
+                    onClick={() => openLinkSafe(p.rawPhoto)}
+                    title="Ouvrir la photo"
+                  >
+                    🔗 Lien photo
+                  </button>
+                ) : null}
               </div>
 
               <div className="cardBody">
@@ -317,8 +336,10 @@ export default function Page() {
                   {p.categorie}
                   {p.poids ? ` • ${p.poids}` : ""}
                 </div>
+
                 <div className="row">
                   <div className="price">{euro(p.prix)} €</div>
+
                   {p.options?.length ? (
                     <button className="btn" onClick={() => openOptions(p)}>
                       ⚙️ Options
@@ -349,6 +370,7 @@ export default function Page() {
               <div className="cartRow" key={i.key}>
                 <div className="left">
                   <div className="cartName">{i.nom}</div>
+
                   {i.selected && Object.keys(i.selected).length > 0 && (
                     <div className="opts">
                       {Object.entries(i.selected).map(([k, v]) => (
@@ -358,8 +380,10 @@ export default function Page() {
                       ))}
                     </div>
                   )}
+
                   <div className="muted">{euro(i.unitPrice)} € / unité</div>
                 </div>
+
                 <div className="qty">
                   <button className="qbtn" onClick={() => dec(i.key)}>
                     −
@@ -399,6 +423,7 @@ export default function Page() {
             {(openProduct.options || []).map((opt) => (
               <div key={opt.name} className="optBlock">
                 <div className="optName">{opt.label || opt.name}</div>
+
                 {opt.type === "select" && (
                   <div className="choices">
                     {opt.choices.map((c) => {
@@ -414,7 +439,10 @@ export default function Page() {
                           {c.label}
                           {Number(c.priceDelta || 0) !== 0 && (
                             <span className="delta">
-                              {c.priceDelta > 0 ? `+${euro(c.priceDelta)}` : euro(c.priceDelta)}€
+                              {c.priceDelta > 0
+                                ? `+${euro(c.priceDelta)}`
+                                : euro(c.priceDelta)}
+                              €
                             </span>
                           )}
                         </button>
@@ -438,60 +466,400 @@ export default function Page() {
       )}
 
       <style jsx global>{`
-        :root{--bg:#0b0b0f;--card:#12121a;--stroke:rgba(255,255,255,.08);--txt:#fff;}
-        html,body{background:var(--bg);color:var(--txt);margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
-        .wrap{padding:14px;padding-bottom:120px;}
-        .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;}
-        .brand{display:flex;align-items:center;gap:10px;}
-        .logo{width:38px;height:38px;border-radius:12px;background:var(--card);display:grid;place-items:center;border:1px solid var(--stroke);}
-        .title{font-weight:900;line-height:1.1;}
-        .subtitle{opacity:.7;font-size:12px;}
-        .totalPill{background:var(--card);border:1px solid var(--stroke);border-radius:14px;padding:8px 10px;min-width:120px;text-align:right;}
-        .muted{opacity:.7;font-size:12px;}
-        .big{font-weight:900;}
-        .cats{display:flex;gap:8px;overflow:auto;padding-bottom:8px;margin-bottom:10px;}
-        .chip{border:1px solid var(--stroke);background:transparent;color:var(--txt);padding:8px 10px;border-radius:999px;white-space:nowrap;}
-        .chip.active{background:rgba(255,255,255,.12);}
-        .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
-        @media (min-width:900px){.grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
-        .card{background:var(--card);border:1px solid var(--stroke);border-radius:16px;overflow:hidden;}
-        .imgWrap{width:100%;height:140px;background:rgba(255,255,255,.04);display:block;}
-        .img{width:100%;height:140px;object-fit:cover;display:block;}
-        .imgPh{height:140px;display:grid;place-items:center;opacity:.6;font-size:12px;}
-        .cardBody{padding:10px;}
-        .name{font-weight:900;margin-bottom:6px;}
-        .meta{opacity:.75;font-size:12px;margin-bottom:10px;}
-        .row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-        .price{font-weight:900;}
-        .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);padding:8px 10px;border-radius:12px;font-weight:800;}
-        .cart{position:fixed;left:0;right:0;bottom:0;background:rgba(11,11,15,.85);backdrop-filter:blur(10px);border-top:1px solid var(--stroke);padding:12px 14px;}
-        .cartTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
-        .cartTitle,.cartTotal{font-weight:900;}
-        .empty{opacity:.7;font-size:13px;padding:6px 0 10px;}
-        .cartList{max-height:180px;overflow:auto;padding-right:6px;margin-bottom:10px;}
-        .cartRow{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--stroke);border-radius:14px;padding:10px;margin-bottom:8px;background:rgba(255,255,255,.04);}
-        .cartName{font-weight:900;margin-bottom:4px;}
-        .opts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
-        .optTag{font-size:11px;border:1px solid var(--stroke);border-radius:999px;padding:3px 8px;opacity:.85;}
-        .qty{display:flex;align-items:center;gap:8px;}
-        .qbtn{width:34px;height:34px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);font-size:18px;font-weight:900;}
-        .qnum{min-width:18px;text-align:center;font-weight:900;}
-        .checkout{width:100%;border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:12px 14px;border-radius:14px;cursor:pointer;}
-        .checkout:disabled{opacity:.5;cursor:not-allowed;}
-        .modalBack{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:14px;}
-        .modal{width:min(520px,100%);background:var(--card);border:1px solid var(--stroke);border-radius:18px;overflow:hidden;}
-        .modalHead{display:flex;justify-content:space-between;align-items:start;padding:12px;border-bottom:1px solid var(--stroke);}
-        .modalTitle{font-weight:900;margin-bottom:4px;}
-        .close{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);border-radius:12px;padding:8px 10px;}
-        .optBlock{padding:12px;border-bottom:1px solid var(--stroke);}
-        .optName{font-weight:900;margin-bottom:8px;}
-        .choices{display:flex;flex-wrap:wrap;gap:8px;}
-        .choice{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--txt);padding:10px 12px;border-radius:14px;font-weight:900;display:flex;align-items:center;gap:8px;}
-        .choice.active{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.5);}
-        .delta{opacity:.85;font-size:12px;}
-        .modalFoot{padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;}
-        .finalPrice{font-weight:900;}
-        .cta{border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:10px 12px;border-radius:14px;cursor:pointer;}
+        :root {
+          --bg: #0b0b0f;
+          --card: #12121a;
+          --stroke: rgba(255, 255, 255, 0.08);
+          --txt: #fff;
+        }
+
+        html,
+        body {
+          background: var(--bg);
+          color: var(--txt);
+          margin: 0;
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+        }
+
+        .wrap {
+          padding: 14px;
+          padding-bottom: 120px;
+        }
+
+        .topbar {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+
+        .brand {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .logo {
+          width: 38px;
+          height: 38px;
+          border-radius: 12px;
+          background: var(--card);
+          display: grid;
+          place-items: center;
+          border: 1px solid var(--stroke);
+        }
+
+        .title {
+          font-weight: 900;
+          line-height: 1.1;
+        }
+
+        .subtitle {
+          opacity: 0.7;
+          font-size: 12px;
+        }
+
+        .totalPill {
+          background: var(--card);
+          border: 1px solid var(--stroke);
+          border-radius: 14px;
+          padding: 8px 10px;
+          min-width: 120px;
+          text-align: right;
+        }
+
+        .muted {
+          opacity: 0.7;
+          font-size: 12px;
+        }
+
+        .big {
+          font-weight: 900;
+        }
+
+        .cats {
+          display: flex;
+          gap: 8px;
+          overflow: auto;
+          padding-bottom: 8px;
+          margin-bottom: 10px;
+        }
+
+        .chip {
+          border: 1px solid var(--stroke);
+          background: transparent;
+          color: var(--txt);
+          padding: 8px 10px;
+          border-radius: 999px;
+          white-space: nowrap;
+        }
+
+        .chip.active {
+          background: rgba(255, 255, 255, 0.12);
+        }
+
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        @media (min-width: 900px) {
+          .grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+          }
+        }
+
+        .card {
+          background: var(--card);
+          border: 1px solid var(--stroke);
+          border-radius: 16px;
+          overflow: hidden;
+        }
+
+        .imgWrap {
+          position: relative;
+          width: 100%;
+          height: 140px;
+          background: rgba(255, 255, 255, 0.04);
+        }
+
+        .img {
+          width: 100%;
+          height: 140px;
+          object-fit: cover;
+          display: block;
+        }
+
+        .imgPh {
+          width: 100%;
+          height: 140px;
+          display: grid;
+          place-items: center;
+          text-align: center;
+          gap: 6px;
+          opacity: 0.8;
+        }
+
+        .phIcon {
+          font-size: 22px;
+        }
+
+        .phTxt {
+          font-size: 12px;
+        }
+
+        .imgLink {
+          position: absolute;
+          right: 8px;
+          bottom: 8px;
+          border: 1px solid var(--stroke);
+          background: rgba(0, 0, 0, 0.35);
+          color: var(--txt);
+          padding: 6px 10px;
+          border-radius: 12px;
+          font-weight: 900;
+        }
+
+        .cardBody {
+          padding: 10px;
+        }
+
+        .name {
+          font-weight: 900;
+          margin-bottom: 6px;
+        }
+
+        .meta {
+          opacity: 0.75;
+          font-size: 12px;
+          margin-bottom: 10px;
+        }
+
+        .row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .price {
+          font-weight: 900;
+        }
+
+        .btn {
+          border: 1px solid var(--stroke);
+          background: rgba(255, 255, 255, 0.06);
+          color: var(--txt);
+          padding: 8px 10px;
+          border-radius: 12px;
+          font-weight: 800;
+        }
+
+        .cart {
+          position: fixed;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(11, 11, 15, 0.85);
+          backdrop-filter: blur(10px);
+          border-top: 1px solid var(--stroke);
+          padding: 12px 14px;
+        }
+
+        .cartTop {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 8px;
+        }
+
+        .cartTitle,
+        .cartTotal {
+          font-weight: 900;
+        }
+
+        .empty {
+          opacity: 0.7;
+          font-size: 13px;
+          padding: 6px 0 10px;
+        }
+
+        .cartList {
+          max-height: 180px;
+          overflow: auto;
+          padding-right: 6px;
+          margin-bottom: 10px;
+        }
+
+        .cartRow {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          border: 1px solid var(--stroke);
+          border-radius: 14px;
+          padding: 10px;
+          margin-bottom: 8px;
+          background: rgba(255, 255, 255, 0.04);
+        }
+
+        .cartName {
+          font-weight: 900;
+          margin-bottom: 4px;
+        }
+
+        .opts {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-bottom: 6px;
+        }
+
+        .optTag {
+          font-size: 11px;
+          border: 1px solid var(--stroke);
+          border-radius: 999px;
+          padding: 3px 8px;
+          opacity: 0.85;
+        }
+
+        .qty {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .qbtn {
+          width: 34px;
+          height: 34px;
+          border-radius: 12px;
+          border: 1px solid var(--stroke);
+          background: rgba(255, 255, 255, 0.06);
+          color: var(--txt);
+          font-size: 18px;
+          font-weight: 900;
+        }
+
+        .qnum {
+          min-width: 18px;
+          text-align: center;
+          font-weight: 900;
+        }
+
+        .checkout {
+          width: 100%;
+          border: none;
+          background: #22c55e;
+          color: #0b0b0f;
+          font-weight: 900;
+          padding: 12px 14px;
+          border-radius: 14px;
+          cursor: pointer;
+        }
+
+        .checkout:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .modalBack {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.6);
+          display: grid;
+          place-items: center;
+          padding: 14px;
+        }
+
+        .modal {
+          width: min(520px, 100%);
+          background: var(--card);
+          border: 1px solid var(--stroke);
+          border-radius: 18px;
+          overflow: hidden;
+        }
+
+        .modalHead {
+          display: flex;
+          justify-content: space-between;
+          align-items: start;
+          padding: 12px;
+          border-bottom: 1px solid var(--stroke);
+        }
+
+        .modalTitle {
+          font-weight: 900;
+          margin-bottom: 4px;
+        }
+
+        .close {
+          border: 1px solid var(--stroke);
+          background: rgba(255, 255, 255, 0.06);
+          color: var(--txt);
+          border-radius: 12px;
+          padding: 8px 10px;
+        }
+
+        .optBlock {
+          padding: 12px;
+          border-bottom: 1px solid var(--stroke);
+        }
+
+        .optName {
+          font-weight: 900;
+          margin-bottom: 8px;
+        }
+
+        .choices {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .choice {
+          border: 1px solid var(--stroke);
+          background: rgba(255, 255, 255, 0.05);
+          color: var(--txt);
+          padding: 10px 12px;
+          border-radius: 14px;
+          font-weight: 900;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .choice.active {
+          background: rgba(34, 197, 94, 0.22);
+          border-color: rgba(34, 197, 94, 0.5);
+        }
+
+        .delta {
+          opacity: 0.85;
+          font-size: 12px;
+        }
+
+        .modalFoot {
+          padding: 12px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .finalPrice {
+          font-weight: 900;
+        }
+
+        .cta {
+          border: none;
+          background: #22c55e;
+          color: #0b0b0f;
+          font-weight: 900;
+          padding: 10px 12px;
+          border-radius: 14px;
+          cursor: pointer;
+        }
       `}</style>
     </div>
   );
