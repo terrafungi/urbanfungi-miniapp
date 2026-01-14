@@ -180,6 +180,15 @@ export default function Page() {
     setOpenProduct(p);
   }
 
+  // ✅ Ajout “intelligent” : si options => ouvre Infos, sinon ajoute direct
+  function quickAddOrOpen(product) {
+    if (product?.options?.length) {
+      openInfos(product);
+      return;
+    }
+    addToCart(product, {});
+  }
+
   function addToCart(product, sel) {
     const unitPrice = calcPrice(product, sel);
     const key = variantKey(product.id, sel);
@@ -324,19 +333,15 @@ export default function Page() {
                 <div className="price">{euro(p.prix)} €</div>
 
                 <div className="actions">
+                  {/* ✅ On garde uniquement Infos */}
                   <button className="btn ghost" onClick={() => openInfos(p)}>
                     ℹ️ Infos
                   </button>
 
-                  {p.options?.length ? (
-                    <button className="btn" onClick={() => openInfos(p)}>
-                      ⚙️ Options
-                    </button>
-                  ) : (
-                    <button className="btn" onClick={() => addToCart(p, {})}>
-                      ➕ Ajouter
-                    </button>
-                  )}
+                  {/* ✅ Plus de bouton “Options” : on met “Ajouter” qui ouvre Infos si options */}
+                  <button className="btn" onClick={() => quickAddOrOpen(p)}>
+                    ➕ Ajouter
+                  </button>
                 </div>
               </div>
             </div>
@@ -422,7 +427,12 @@ export default function Page() {
                   loading="lazy"
                   referrerPolicy="no-referrer"
                 />
-                <a className="openLink" href={openProduct.photo} target="_blank" rel="noreferrer">
+                <a
+                  className="openLink"
+                  href={openProduct.photo}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   🔗 Ouvrir la photo
                 </a>
               </div>
@@ -536,7 +546,7 @@ export default function Page() {
 
         .card{
           background:var(--card);
-          border:1px solid var(--stroke); /* ✅ plus 11px */
+          border:1px solid var(--stroke);
           border-radius:16px;
           overflow:hidden;
         }
@@ -557,7 +567,7 @@ export default function Page() {
 
         .img{
           width:100%;
-          height:170px;           /* ✅ photo plus grande */
+          height:170px;
           object-fit:cover;
           display:block;
         }
@@ -567,7 +577,16 @@ export default function Page() {
         .meta{opacity:.75;font-size:12px;margin-bottom:10px;}
         .row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;}
         .price{font-weight:900;font-size:18px;}
-        .actions{display:flex;gap:8px;align-items:center;}
+
+        /* ✅ Anti-tronquage boutons */
+        .actions{
+          display:flex;
+          gap:8px;
+          align-items:center;
+          flex-wrap:wrap;
+          justify-content:flex-end;
+          min-width:0;
+        }
         .btn{
           border:1px solid var(--stroke);
           background:rgba(255,255,255,.06);
@@ -576,8 +595,22 @@ export default function Page() {
           border-radius:12px;
           font-weight:800;
           cursor:pointer;
+          white-space:nowrap;
+          min-width:0;
+          flex:1 1 120px; /* ✅ permet de shrink + wrap */
         }
         .btn.ghost{background:transparent;}
+
+        @media (max-width: 380px){
+          .actions{
+            flex-direction:column;
+            align-items:stretch;
+          }
+          .btn{
+            width:100%;
+            flex: 1 1 auto;
+          }
+        }
 
         .cart{
           position:fixed;left:0;right:0;bottom:0;
@@ -680,7 +713,7 @@ export default function Page() {
         .desc{padding:12px;border-bottom:1px solid var(--stroke);}
         .descTitle{font-weight:900;margin-bottom:8px;}
         .descText{
-          white-space:pre-wrap; /* ✅ retours à la ligne */
+          white-space:pre-wrap;
           opacity:.92;
           line-height:1.35;
           font-size:14px;
