@@ -22,12 +22,10 @@ export async function GET(req) {
       return bad("Bad URL", 400);
     }
 
-    // Sécurité minimale : on n'accepte que http/https
     if (!["http:", "https:"].includes(target.protocol)) {
       return bad("Bad protocol", 400);
     }
 
-    // Headers anti-hotlink : certains serveurs renvoient 404 si pas de Referer/User-Agent
     const upstream = await fetch(target.toString(), {
       redirect: "follow",
       headers: {
@@ -37,13 +35,15 @@ export async function GET(req) {
         Referer: "https://urbfgi.fun/",
         Origin: "https://urbfgi.fun",
       },
-      // Important sur certains hébergeurs
       cache: "no-store",
     });
 
     if (!upstream.ok) {
       const text = await upstream.text().catch(() => "");
-      return bad(`Upstream error: ${upstream.status}\n${text.slice(0, 200)}`, upstream.status);
+      return bad(
+        `Upstream error: ${upstream.status}\n${text.slice(0, 200)}`,
+        upstream.status
+      );
     }
 
     const contentType = upstream.headers.get("content-type") || "image/jpeg";
@@ -56,7 +56,7 @@ export async function GET(req) {
         "cache-control": "public, max-age=86400",
       },
     });
-  } catch (e) {
+  } catch {
     return bad("Proxy error", 500);
   }
 }
