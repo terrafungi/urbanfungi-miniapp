@@ -21,13 +21,15 @@ function normalizeFallback(raw) {
   return [];
 }
 
-// ✅ Proxy image via ton domaine Next.js
+// Proxy image via ton domaine Next.js (évite les blocages Telegram)
 function proxifyImage(url) {
-  if (!url || typeof url !== "string") return "";
+  if (!url) return "";
+  if (typeof url !== "string") return "";
   if (!url.startsWith("http")) return url;
   return `/api/img?u=${encodeURIComponent(url)}`;
 }
 
+// Convertit API -> UI
 function mapApiToUi(api) {
   const cats = Array.isArray(api?.categories) ? api.categories : [];
   const catById = new Map(cats.map((c) => [String(c.id), c]));
@@ -40,7 +42,20 @@ function mapApiToUi(api) {
     const catName =
       p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
-    // variantes => option select
+    const base = {
+      id: String(p.id),
+      nom: p.title || "Produit",
+      photo: proxifyImage(p.image || ""),
+      rawPhoto: p.image || "",
+      categorie: catName,
+      poids: p.weight || "",
+      // ✅ descriptions depuis ton PHP
+      shortDesc: (p.shortDesc || "").trim(),
+      longDesc: (p.longDesc || "").trim(),
+      options: Array.isArray(p.options) ? p.options : [],
+    };
+
+    // variantes => option select + prix min
     if (Array.isArray(p.variants) && p.variants.length) {
       const vars = p.variants.filter((v) => v?.active !== false);
       if (vars.length) {
@@ -48,13 +63,8 @@ function mapApiToUi(api) {
         const minPrice = Math.min(...prices);
 
         out.push({
-          id: String(p.id),
-          nom: p.title || "Produit",
-          photo: proxifyImage(p.image || ""),
-          rawPhoto: p.image || "",
-          categorie: catName,
+          ...base,
           prix: Number(minPrice.toFixed(2)),
-          poids: p.weight || "",
           options: [
             {
               name: "variante",
@@ -66,7 +76,7 @@ function mapApiToUi(api) {
                 return {
                   label: v.label || v.weight || "Option",
                   priceDelta: Number((price - minPrice).toFixed(2)),
-                  variantId: String(v.id ?? ""),
+                  variantId: v.id,
                 };
               }),
             },
@@ -77,14 +87,8 @@ function mapApiToUi(api) {
     }
 
     out.push({
-      id: String(p.id),
-      nom: p.title || "Produit",
-      photo: proxifyImage(p.image || ""),
-      rawPhoto: p.image || "",
-      categorie: catName,
+      ...base,
       prix: Number(Number(p.salePrice ?? p.price ?? 0).toFixed(2)),
-      poids: p.weight || "",
-      options: Array.isArray(p.options) ? p.options : [],
     });
   }
 
@@ -111,33 +115,23 @@ function variantKey(productId, selected) {
   return `${productId}::${JSON.stringify(selected || {})}`;
 }
 
-function openLinkSafe(url) {
-  if (!url) return;
-  const w = getWebApp();
-  try {
-    if (w?.openLink) w.openLink(url);
-    else window.open(url, "_blank");
-  } catch {
-    try {
-      window.open(url, "_blank");
-    } catch {}
-  }
-}
-
 export default function Page() {
   const initialFallback = useMemo(() => normalizeFallback(fallbackRaw), []);
   const [products, setProducts] = useState(initialFallback);
 
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]);
+
+  // modal options
   const [openProduct, setOpenProduct] = useState(null);
   const [selected, setSelected] = useState({});
+
+  // ✅ modal infos
+  const [infoProduct, setInfoProduct] = useState(null);
+
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // img errors: { [productId]: true }
-  const [imgFailed, setImgFailed] = useState({});
-
-  // ✅ Telegram init
+  // Telegram init
   useEffect(() => {
     const w = getWebApp();
     if (!w) return;
@@ -147,7 +141,7 @@ export default function Page() {
     } catch {}
   }, []);
 
-  // ✅ Load catalog
+  // Load catalog
   useEffect(() => {
     const url = `${CATALOG_URL}?v=${Date.now()}`;
     fetch(url, { cache: "no-store" })
@@ -200,18 +194,12 @@ export default function Page() {
       }
       return [
         ...prev,
-        {
-          key,
-          id: product.id,
-          nom: product.nom,
-          unitPrice,
-          selected: sel,
-          qty: 1,
-        },
+        { key, id: product.id, nom: product.nom, unitPrice, selected: sel, qty: 1 },
       ];
     });
 
     setOpenProduct(null);
+    setInfoProduct(null);
   }
 
   function dec(key) {
@@ -233,6 +221,7 @@ export default function Page() {
       alert("Mini-App Telegram non détectée. Ouvrez depuis le bot.");
       return;
     }
+
     if (!cart.length || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -251,11 +240,13 @@ export default function Page() {
 
     try {
       w.sendData(JSON.stringify(payload));
+
       w.showAlert("✅ Commande envoyée au bot. Retour au chat…", () => {
         try {
           w.close();
         } catch {}
       });
+
       setCart([]);
     } catch (e) {
       console.error(e);
@@ -264,6 +255,8 @@ export default function Page() {
       setTimeout(() => setIsSubmitting(false), 600);
     }
   }
+
+  const hasDesc = (p) => Boolean((p?.shortDesc || "").trim() || (p?.longDesc || "").trim());
 
   return (
     <div className="wrap">
@@ -275,7 +268,6 @@ export default function Page() {
             <div className="subtitle">Boutique • Mini App</div>
           </div>
         </div>
-
         <div className="totalPill">
           <div className="muted">Total</div>
           <div className="big">{euro(total)} €</div>
@@ -295,50 +287,44 @@ export default function Page() {
       </div>
 
       <div className="grid">
-        {filtered.map((p) => {
-          const failed = !!imgFailed[p.id];
-          const hasImg = !!p.photo;
+        {filtered.map((p) => (
+          <div key={p.id} className="card">
+            {p.photo ? (
+              <button
+                className="imgBtn"
+                type="button"
+                onClick={() => setInfoProduct(p)}
+                aria-label="Ouvrir la photo"
+              >
+                <img
+                  className="img"
+                  src={`${p.photo}&v=${Date.now()}`}
+                  alt={p.nom}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+              </button>
+            ) : null}
 
-          return (
-            <div key={p.id} className="card">
-              <div className="imgWrap">
-                {hasImg && !failed ? (
-                  <img
-                    className="img"
-                    src={p.photo}
-                    alt={p.nom}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    onError={() => setImgFailed((s) => ({ ...s, [p.id]: true }))}
-                  />
-                ) : (
-                  <div className="imgPh">
-                    <div className="phIcon">🍄</div>
-                    <div className="phTxt">Image non chargée</div>
-                  </div>
-                )}
-
-                {/* ✅ Bouton lien (toujours présent si rawPhoto existe) */}
-                {p.rawPhoto ? (
-                  <button
-                    className="imgLink"
-                    onClick={() => openLinkSafe(p.rawPhoto)}
-                    title="Ouvrir la photo"
-                  >
-                    🔗 Lien photo
-                  </button>
-                ) : null}
+            <div className="cardBody">
+              <div className="name">{p.nom}</div>
+              <div className="meta">
+                {p.categorie}
+                {p.poids ? ` • ${p.poids}` : ""}
               </div>
 
-              <div className="cardBody">
-                <div className="name">{p.nom}</div>
-                <div className="meta">
-                  {p.categorie}
-                  {p.poids ? ` • ${p.poids}` : ""}
-                </div>
+              <div className="row">
+                <div className="price">{euro(p.prix)} €</div>
 
-                <div className="row">
-                  <div className="price">{euro(p.prix)} €</div>
+                <div className="actions">
+                  {hasDesc(p) && (
+                    <button className="btn ghost" onClick={() => setInfoProduct(p)}>
+                      ℹ️ Plus d’infos
+                    </button>
+                  )}
 
                   {p.options?.length ? (
                     <button className="btn" onClick={() => openOptions(p)}>
@@ -351,9 +337,15 @@ export default function Page() {
                   )}
                 </div>
               </div>
+
+              {p.rawPhoto ? (
+                <a className="photoLink" href={p.rawPhoto} target="_blank" rel="noreferrer">
+                  🔗 Lien photo
+                </a>
+              ) : null}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
 
       <div className="cart">
@@ -370,7 +362,6 @@ export default function Page() {
               <div className="cartRow" key={i.key}>
                 <div className="left">
                   <div className="cartName">{i.nom}</div>
-
                   {i.selected && Object.keys(i.selected).length > 0 && (
                     <div className="opts">
                       {Object.entries(i.selected).map(([k, v]) => (
@@ -380,10 +371,8 @@ export default function Page() {
                       ))}
                     </div>
                   )}
-
                   <div className="muted">{euro(i.unitPrice)} € / unité</div>
                 </div>
-
                 <div className="qty">
                   <button className="qbtn" onClick={() => dec(i.key)}>
                     −
@@ -407,6 +396,76 @@ export default function Page() {
         </button>
       </div>
 
+      {/* ✅ MODAL INFOS (photo + descriptions) */}
+      {infoProduct && (
+        <div className="modalBack" onClick={() => setInfoProduct(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modalHead">
+              <div>
+                <div className="modalTitle">{infoProduct.nom}</div>
+                <div className="muted">
+                  {infoProduct.categorie}
+                  {infoProduct.poids ? ` • ${infoProduct.poids}` : ""}
+                </div>
+              </div>
+              <button className="close" onClick={() => setInfoProduct(null)}>
+                ✕
+              </button>
+            </div>
+
+            {infoProduct.photo ? (
+              <div className="hero">
+                <img
+                  className="heroImg"
+                  src={`${infoProduct.photo}&v=${Date.now()}`}
+                  alt={infoProduct.nom}
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+            ) : null}
+
+            <div className="infoBody">
+              {infoProduct.shortDesc ? (
+                <div className="descBlock">
+                  <div className="descTitle">Description courte</div>
+                  <div className="descText">{infoProduct.shortDesc}</div>
+                </div>
+              ) : null}
+
+              {infoProduct.longDesc ? (
+                <div className="descBlock">
+                  <div className="descTitle">Description longue</div>
+                  <div className="descText long">{infoProduct.longDesc}</div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="modalFoot">
+              <div className="finalPrice">
+                Prix: <b>{euro(infoProduct.prix)} €</b>
+              </div>
+
+              {infoProduct.options?.length ? (
+                <button
+                  className="cta"
+                  onClick={() => {
+                    setInfoProduct(null);
+                    openOptions(infoProduct);
+                  }}
+                >
+                  ⚙️ Choisir options
+                </button>
+              ) : (
+                <button className="cta" onClick={() => addToCart(infoProduct, {})}>
+                  ➕ Ajouter
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL OPTIONS (existant) */}
       {openProduct && (
         <div className="modalBack" onClick={() => setOpenProduct(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -423,7 +482,6 @@ export default function Page() {
             {(openProduct.options || []).map((opt) => (
               <div key={opt.name} className="optBlock">
                 <div className="optName">{opt.label || opt.name}</div>
-
                 {opt.type === "select" && (
                   <div className="choices">
                     {opt.choices.map((c) => {
@@ -466,400 +524,79 @@ export default function Page() {
       )}
 
       <style jsx global>{`
-        :root {
-          --bg: #0b0b0f;
-          --card: #12121a;
-          --stroke: rgba(255, 255, 255, 0.08);
-          --txt: #fff;
-        }
+        :root{--bg:#0b0b0f;--card:#12121a;--stroke:rgba(255,255,255,.08);--txt:#fff;}
+        html,body{background:var(--bg);color:var(--txt);margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+        .wrap{padding:14px;padding-bottom:120px;}
+        .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;}
+        .brand{display:flex;align-items:center;gap:10px;}
+        .logo{width:38px;height:38px;border-radius:12px;background:var(--card);display:grid;place-items:center;border:1px solid var(--stroke);}
+        .title{font-weight:900;line-height:1.1;}
+        .subtitle{opacity:.7;font-size:12px;}
+        .totalPill{background:var(--card);border:1px solid var(--stroke);border-radius:14px;padding:8px 10px;min-width:120px;text-align:right;}
+        .muted{opacity:.7;font-size:12px;}
+        .big{font-weight:900;}
+        .cats{display:flex;gap:8px;overflow:auto;padding-bottom:8px;margin-bottom:10px;}
+        .chip{border:1px solid var(--stroke);background:transparent;color:var(--txt);padding:8px 10px;border-radius:999px;white-space:nowrap;}
+        .chip.active{background:rgba(255,255,255,.12);}
+        .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+        @media (min-width:900px){.grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
 
-        html,
-        body {
-          background: var(--bg);
-          color: var(--txt);
-          margin: 0;
-          font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
-        }
+        /* ✅ carte propre + image plus grande */
+        .card{background:var(--card);border:1px solid var(--stroke);border-radius:16px;overflow:hidden;}
+        .imgBtn{padding:0;border:none;background:transparent;display:block;width:100%;cursor:pointer;}
+        .img{width:100%;height:170px;object-fit:cover;display:block;}
+        .cardBody{padding:10px;}
+        .name{font-weight:900;margin-bottom:6px;}
+        .meta{opacity:.75;font-size:12px;margin-bottom:10px;}
+        .row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;}
+        .price{font-weight:900;}
+        .actions{display:flex;flex-direction:column;gap:8px;align-items:flex-end;}
+        .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);padding:8px 10px;border-radius:12px;font-weight:800;}
+        .btn.ghost{background:transparent;}
+        .photoLink{display:inline-block;margin-top:8px;opacity:.85;font-size:12px;text-decoration:none;color:var(--txt);}
+        .photoLink:active{opacity:1;}
 
-        .wrap {
-          padding: 14px;
-          padding-bottom: 120px;
-        }
+        .cart{position:fixed;left:0;right:0;bottom:0;background:rgba(11,11,15,.85);backdrop-filter:blur(10px);border-top:1px solid var(--stroke);padding:12px 14px;}
+        .cartTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+        .cartTitle,.cartTotal{font-weight:900;}
+        .empty{opacity:.7;font-size:13px;padding:6px 0 10px;}
+        .cartList{max-height:180px;overflow:auto;padding-right:6px;margin-bottom:10px;}
+        .cartRow{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--stroke);border-radius:14px;padding:10px;margin-bottom:8px;background:rgba(255,255,255,.04);}
+        .cartName{font-weight:900;margin-bottom:4px;}
+        .opts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
+        .optTag{font-size:11px;border:1px solid var(--stroke);border-radius:999px;padding:3px 8px;opacity:.85;}
+        .qty{display:flex;align-items:center;gap:8px;}
+        .qbtn{width:34px;height:34px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);font-size:18px;font-weight:900;}
+        .qnum{min-width:18px;text-align:center;font-weight:900;}
+        .checkout{width:100%;border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:12px 14px;border-radius:14px;cursor:pointer;}
+        .checkout:disabled{opacity:.5;cursor:not-allowed;}
 
-        .topbar {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          margin-bottom: 12px;
-        }
+        .modalBack{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:14px;z-index:50;}
+        .modal{width:min(520px,100%);background:var(--card);border:1px solid var(--stroke);border-radius:18px;overflow:hidden;}
+        .modalHead{display:flex;justify-content:space-between;align-items:start;padding:12px;border-bottom:1px solid var(--stroke);}
+        .modalTitle{font-weight:900;margin-bottom:4px;}
+        .close{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);border-radius:12px;padding:8px 10px;}
 
-        .brand {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
+        /* ✅ hero image grand */
+        .hero{border-bottom:1px solid var(--stroke);background:rgba(255,255,255,.03);}
+        .heroImg{width:100%;height:260px;object-fit:cover;display:block;}
 
-        .logo {
-          width: 38px;
-          height: 38px;
-          border-radius: 12px;
-          background: var(--card);
-          display: grid;
-          place-items: center;
-          border: 1px solid var(--stroke);
-        }
+        /* ✅ descriptions */
+        .infoBody{padding:12px;display:flex;flex-direction:column;gap:12px;}
+        .descBlock{border:1px solid var(--stroke);border-radius:14px;padding:10px;background:rgba(255,255,255,.04);}
+        .descTitle{font-weight:900;margin-bottom:6px;}
+        .descText{opacity:.9;font-size:14px;line-height:1.45;white-space:pre-wrap;}
+        .descText.long{max-height:220px;overflow:auto;padding-right:6px;}
 
-        .title {
-          font-weight: 900;
-          line-height: 1.1;
-        }
-
-        .subtitle {
-          opacity: 0.7;
-          font-size: 12px;
-        }
-
-        .totalPill {
-          background: var(--card);
-          border: 1px solid var(--stroke);
-          border-radius: 14px;
-          padding: 8px 10px;
-          min-width: 120px;
-          text-align: right;
-        }
-
-        .muted {
-          opacity: 0.7;
-          font-size: 12px;
-        }
-
-        .big {
-          font-weight: 900;
-        }
-
-        .cats {
-          display: flex;
-          gap: 8px;
-          overflow: auto;
-          padding-bottom: 8px;
-          margin-bottom: 10px;
-        }
-
-        .chip {
-          border: 1px solid var(--stroke);
-          background: transparent;
-          color: var(--txt);
-          padding: 8px 10px;
-          border-radius: 999px;
-          white-space: nowrap;
-        }
-
-        .chip.active {
-          background: rgba(255, 255, 255, 0.12);
-        }
-
-        .grid {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 10px;
-        }
-
-        @media (min-width: 900px) {
-          .grid {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-          }
-        }
-
-        .card {
-          background: var(--card);
-          border: 1px solid var(--stroke);
-          border-radius: 16px;
-          overflow: hidden;
-        }
-
-        .imgWrap {
-          position: relative;
-          width: 100%;
-          height: 140px;
-          background: rgba(255, 255, 255, 0.04);
-        }
-
-        .img {
-          width: 100%;
-          height: 140px;
-          object-fit: cover;
-          display: block;
-        }
-
-        .imgPh {
-          width: 100%;
-          height: 140px;
-          display: grid;
-          place-items: center;
-          text-align: center;
-          gap: 6px;
-          opacity: 0.8;
-        }
-
-        .phIcon {
-          font-size: 22px;
-        }
-
-        .phTxt {
-          font-size: 12px;
-        }
-
-        .imgLink {
-          position: absolute;
-          right: 8px;
-          bottom: 8px;
-          border: 1px solid var(--stroke);
-          background: rgba(0, 0, 0, 0.35);
-          color: var(--txt);
-          padding: 6px 10px;
-          border-radius: 12px;
-          font-weight: 900;
-        }
-
-        .cardBody {
-          padding: 10px;
-        }
-
-        .name {
-          font-weight: 900;
-          margin-bottom: 6px;
-        }
-
-        .meta {
-          opacity: 0.75;
-          font-size: 12px;
-          margin-bottom: 10px;
-        }
-
-        .row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .price {
-          font-weight: 900;
-        }
-
-        .btn {
-          border: 1px solid var(--stroke);
-          background: rgba(255, 255, 255, 0.06);
-          color: var(--txt);
-          padding: 8px 10px;
-          border-radius: 12px;
-          font-weight: 800;
-        }
-
-        .cart {
-          position: fixed;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background: rgba(11, 11, 15, 0.85);
-          backdrop-filter: blur(10px);
-          border-top: 1px solid var(--stroke);
-          padding: 12px 14px;
-        }
-
-        .cartTop {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 8px;
-        }
-
-        .cartTitle,
-        .cartTotal {
-          font-weight: 900;
-        }
-
-        .empty {
-          opacity: 0.7;
-          font-size: 13px;
-          padding: 6px 0 10px;
-        }
-
-        .cartList {
-          max-height: 180px;
-          overflow: auto;
-          padding-right: 6px;
-          margin-bottom: 10px;
-        }
-
-        .cartRow {
-          display: flex;
-          justify-content: space-between;
-          gap: 10px;
-          border: 1px solid var(--stroke);
-          border-radius: 14px;
-          padding: 10px;
-          margin-bottom: 8px;
-          background: rgba(255, 255, 255, 0.04);
-        }
-
-        .cartName {
-          font-weight: 900;
-          margin-bottom: 4px;
-        }
-
-        .opts {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          margin-bottom: 6px;
-        }
-
-        .optTag {
-          font-size: 11px;
-          border: 1px solid var(--stroke);
-          border-radius: 999px;
-          padding: 3px 8px;
-          opacity: 0.85;
-        }
-
-        .qty {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .qbtn {
-          width: 34px;
-          height: 34px;
-          border-radius: 12px;
-          border: 1px solid var(--stroke);
-          background: rgba(255, 255, 255, 0.06);
-          color: var(--txt);
-          font-size: 18px;
-          font-weight: 900;
-        }
-
-        .qnum {
-          min-width: 18px;
-          text-align: center;
-          font-weight: 900;
-        }
-
-        .checkout {
-          width: 100%;
-          border: none;
-          background: #22c55e;
-          color: #0b0b0f;
-          font-weight: 900;
-          padding: 12px 14px;
-          border-radius: 14px;
-          cursor: pointer;
-        }
-
-        .checkout:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .modalBack {
-          position: fixed;
-          inset: 0;
-          background: rgba(0, 0, 0, 0.6);
-          display: grid;
-          place-items: center;
-          padding: 14px;
-        }
-
-        .modal {
-          width: min(520px, 100%);
-          background: var(--card);
-          border: 1px solid var(--stroke);
-          border-radius: 18px;
-          overflow: hidden;
-        }
-
-        .modalHead {
-          display: flex;
-          justify-content: space-between;
-          align-items: start;
-          padding: 12px;
-          border-bottom: 1px solid var(--stroke);
-        }
-
-        .modalTitle {
-          font-weight: 900;
-          margin-bottom: 4px;
-        }
-
-        .close {
-          border: 1px solid var(--stroke);
-          background: rgba(255, 255, 255, 0.06);
-          color: var(--txt);
-          border-radius: 12px;
-          padding: 8px 10px;
-        }
-
-        .optBlock {
-          padding: 12px;
-          border-bottom: 1px solid var(--stroke);
-        }
-
-        .optName {
-          font-weight: 900;
-          margin-bottom: 8px;
-        }
-
-        .choices {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-        }
-
-        .choice {
-          border: 1px solid var(--stroke);
-          background: rgba(255, 255, 255, 0.05);
-          color: var(--txt);
-          padding: 10px 12px;
-          border-radius: 14px;
-          font-weight: 900;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .choice.active {
-          background: rgba(34, 197, 94, 0.22);
-          border-color: rgba(34, 197, 94, 0.5);
-        }
-
-        .delta {
-          opacity: 0.85;
-          font-size: 12px;
-        }
-
-        .modalFoot {
-          padding: 12px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 10px;
-        }
-
-        .finalPrice {
-          font-weight: 900;
-        }
-
-        .cta {
-          border: none;
-          background: #22c55e;
-          color: #0b0b0f;
-          font-weight: 900;
-          padding: 10px 12px;
-          border-radius: 14px;
-          cursor: pointer;
-        }
+        .optBlock{padding:12px;border-bottom:1px solid var(--stroke);}
+        .optName{font-weight:900;margin-bottom:8px;}
+        .choices{display:flex;flex-wrap:wrap;gap:8px;}
+        .choice{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--txt);padding:10px 12px;border-radius:14px;font-weight:900;display:flex;align-items:center;gap:8px;}
+        .choice.active{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.5);}
+        .delta{opacity:.85;font-size:12px;}
+        .modalFoot{padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;border-top:1px solid var(--stroke);}
+        .finalPrice{font-weight:900;}
+        .cta{border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:10px 12px;border-radius:14px;cursor:pointer;}
       `}</style>
     </div>
   );
