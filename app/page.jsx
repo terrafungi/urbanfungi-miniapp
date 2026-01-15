@@ -15,13 +15,6 @@ function euro(n) {
   return Number(n || 0).toFixed(2);
 }
 
-function normalizeFallback(raw) {
-  if (Array.isArray(raw)) return raw;
-  if (raw && Array.isArray(raw.products)) return raw.products;
-  return [];
-}
-
-// Proxy image via ton domaine Next.js (évite blocages Telegram)
 function proxifyImage(url) {
   if (!url || typeof url !== "string") return "";
   if (!url.startsWith("http")) return url;
@@ -37,18 +30,37 @@ function mapApiToUi(api) {
   for (const p of products) {
     if (!p) continue;
 
-    const isActive = p.active !== false;
+    const active = p.active !== false; // ✅ ON NE FILTRE PLUS
     const catName =
       p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
     const description = String(p.longDesc || p.shortDesc || "").trim();
 
-    // variantes => choix (prix pleins, pas de "+X")
+    // variantes => option select (seulement les variantes actives pour commander)
+    let options = Array.isArray(p.options) ? p.options : [];
+
     if (Array.isArray(p.variants) && p.variants.length) {
       const vars = p.variants.filter((v) => v?.active !== false);
       if (vars.length) {
         const prices = vars.map((v) => Number(v.salePrice ?? v.price ?? 0));
         const minPrice = Math.min(...prices);
+
+        options = [
+          {
+            name: "variante",
+            label: "Choix",
+            type: "select",
+            required: true,
+            choices: vars.map((v) => {
+              const price = Number(v.salePrice ?? v.price ?? 0);
+              return {
+                label: v.label || v.weight || "Option",
+                priceDelta: Number((price - minPrice).toFixed(2)),
+                variantId: v.id,
+              };
+            }),
+          },
+        ];
 
         out.push({
           id: String(p.id),
@@ -56,27 +68,11 @@ function mapApiToUi(api) {
           photo: proxifyImage(p.image || ""),
           rawPhoto: p.image || "",
           categorie: catName,
-          prix: Number(minPrice.toFixed(2)), // affichage carte = prix mini
+          prix: Number(minPrice.toFixed(2)),
           poids: p.weight || "",
           description,
-          isActive,
-          options: [
-            {
-              name: "variante",
-              label: "Choix",
-              type: "select",
-              required: true,
-              absolute: true, // ✅ IMPORTANT : prix absolu (pas delta)
-              choices: vars.map((v) => {
-                const price = Number(v.salePrice ?? v.price ?? 0);
-                return {
-                  label: v.label || v.weight || "Option",
-                  price: Number(price.toFixed(2)),
-                  variantId: v.id,
-                };
-              }),
-            },
-          ],
+          options,
+          active,
         });
         continue;
       }
@@ -91,15 +87,14 @@ function mapApiToUi(api) {
       prix: Number(Number(p.salePrice ?? p.price ?? 0).toFixed(2)),
       poids: p.weight || "",
       description,
-      isActive,
-      options: Array.isArray(p.options) ? p.options : [],
+      options,
+      active,
     });
   }
   return out;
 }
 
 function calcPrice(product, selected) {
-  // base = prix carte
   let price = Number(product?.prix || 0);
   const opts = Array.isArray(product?.options) ? product.options : [];
 
@@ -109,18 +104,9 @@ function calcPrice(product, selected) {
 
     if (opt.type === "select") {
       const c = opt.choices?.find((x) => x.label === v);
-      if (!c) continue;
-
-      // ✅ Si option "absolute" => le prix final = prix de la variante
-      if (opt.absolute && typeof c.price === "number") {
-        price = Number(c.price);
-      } else {
-        // compat ancienne logique delta
-        price += Number(c?.priceDelta || 0);
-      }
+      price += Number(c?.priceDelta || 0);
     }
   }
-
   return Number(price.toFixed(2));
 }
 
@@ -129,17 +115,25 @@ function variantKey(productId, selected) {
 }
 
 export default function Page() {
-  const initialFallback = useMemo(() => normalizeFallback(fallbackRaw), []);
-  const [products, setProducts] = useState(initialFallback);
-
+  const [products, setProducts] = useState([]);
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]);
   const [openProduct, setOpenProduct] = useState(null);
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // cache-buster stable (évite Date.now dans chaque <img>)
   const [imgBust, setImgBust] = useState(Date.now());
+
+  // Fallback local si besoin
+  useEffect(() => {
+    try {
+      if (fallbackRaw?.products || fallbackRaw?.categories) {
+        const mapped = mapApiToUi(fallbackRaw);
+        if (mapped.length) setProducts(mapped);
+      } else if (Array.isArray(fallbackRaw) && fallbackRaw.length) {
+        setProducts(fallbackRaw);
+      }
+    } catch {}
+  }, []);
 
   // Telegram init
   useEffect(() => {
@@ -194,21 +188,8 @@ export default function Page() {
     setOpenProduct(p);
   }
 
-  // ✅ Ajout “intelligent” : si options => ouvre Infos, sinon ajoute direct
-  function quickAddOrOpen(product) {
-    if (!product?.isActive) {
-      openInfos(product);
-      return;
-    }
-    if (product?.options?.length) {
-      openInfos(product);
-      return;
-    }
-    addToCart(product, {});
-  }
-
   function addToCart(product, sel) {
-    if (!product?.isActive) return;
+    if (!product?.active) return; // ✅ bloque achat si non actif
 
     const unitPrice = calcPrice(product, sel);
     const key = variantKey(product.id, sel);
@@ -322,7 +303,7 @@ export default function Page() {
 
       <div className="grid">
         {filtered.map((p) => (
-          <div key={p.id} className="card">
+          <div key={p.id} className={`card ${p.active ? "" : "inactive"}`}>
             <button className="imgBtn" onClick={() => openInfos(p)}>
               {p.photo ? (
                 <img
@@ -336,15 +317,11 @@ export default function Page() {
                   }}
                 />
               ) : (
-                <div className="phWrap">
-                  <div className="ph">🍄</div>
-                </div>
+                <div className="ph">🍄</div>
               )}
 
-              {/* ✅ Badge lisible SUR l'image */}
-              <div className={`badge ${p.isActive ? "stock" : "restock"}`}>
-                <span className="dot" />
-                <span className="badgeTxt">{p.isActive ? "En stock" : "En réappro"}</span>
+              <div className={`badge ${p.active ? "stock" : "reappro"}`}>
+                {p.active ? "✅ En stock" : "⏳ Réappro"}
               </div>
             </button>
 
@@ -363,14 +340,21 @@ export default function Page() {
                     ℹ️ Infos
                   </button>
 
-                  <button
-                    className="btn"
-                    onClick={() => quickAddOrOpen(p)}
-                    disabled={!p.isActive}
-                    title={!p.isActive ? "Produit en réapprovisionnement" : ""}
-                  >
-                    {!p.isActive ? "⏳ Réappro" : "➕ Ajouter"}
-                  </button>
+                  {p.active ? (
+                    p.options?.length ? (
+                      <button className="btn" onClick={() => openInfos(p)}>
+                        ⚙️ Options
+                      </button>
+                    ) : (
+                      <button className="btn" onClick={() => addToCart(p, {})}>
+                        ➕ Ajouter
+                      </button>
+                    )
+                  ) : (
+                    <button className="btn disabled" disabled>
+                      ⏳ Réappro
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -438,7 +422,6 @@ export default function Page() {
                 <div className="muted">
                   {openProduct.categorie}
                   {openProduct.poids ? ` • ${openProduct.poids}` : ""}
-                  {!openProduct.isActive ? " • ⏳ Réappro" : ""}
                 </div>
               </div>
               <button className="close" onClick={() => setOpenProduct(null)}>
@@ -446,75 +429,73 @@ export default function Page() {
               </button>
             </div>
 
-            <div className="modalScroll">
-              {openProduct.photo ? (
-                <div className="modalImgWrap">
-                  <img
-                    className="modalImg"
-                    src={`${openProduct.photo}${
-                      openProduct.photo.includes("?") ? "&" : "?"
-                    }v=${imgBust}`}
-                    alt={openProduct.nom}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                  />
-                  <a
-                    className="openLink"
-                    href={openProduct.photo}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    🔗 Ouvrir la photo
-                  </a>
-                </div>
-              ) : null}
-
-              {openProduct.description ? (
-                <div className="desc">
-                  <div className="descTitle">📄 Description</div>
-                  <div className="descText">{openProduct.description}</div>
-                </div>
-              ) : null}
-
-              {(openProduct.options || []).length ? (
-                <div className="optArea">
-                  <div className="optAreaTitle">⚙️ Options</div>
-
-                  {(openProduct.options || []).map((opt) => (
-                    <div key={opt.name} className="optBlock">
-                      <div className="optName">{opt.label || opt.name}</div>
-
-                      {opt.type === "select" && (
-                        <div className="choices">
-                          {opt.choices.map((c) => {
-                            const active = selected?.[opt.name] === c.label;
-
-                            // ✅ Affichage "grammes + prix plein"
-                            const fullPrice =
-                              typeof c.price === "number"
-                                ? c.price
-                                : Number(openProduct.prix) + Number(c.priceDelta || 0);
-
-                            return (
-                              <button
-                                key={c.label}
-                                className={`choice ${active ? "active" : ""}`}
-                                onClick={() =>
-                                  setSelected((s) => ({ ...s, [opt.name]: c.label }))
-                                }
-                              >
-                                <span className="choiceMain">{c.label}</span>
-                                <span className="choicePrice">{euro(fullPrice)} €</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
+            <div className={`modalStatus ${openProduct.active ? "stock" : "reappro"}`}>
+              {openProduct.active ? "✅ En stock" : "⏳ Réapprovisionnement"}
             </div>
+
+            {openProduct.photo ? (
+              <div className="modalImgWrap">
+                <img
+                  className="modalImg"
+                  src={`${openProduct.photo}${openProduct.photo.includes("?") ? "&" : "?"}v=${imgBust}`}
+                  alt={openProduct.nom}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+                <a
+                  className="openLink"
+                  href={openProduct.rawPhoto || openProduct.photo}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  🔗 Ouvrir la photo
+                </a>
+              </div>
+            ) : null}
+
+            {openProduct.description ? (
+              <div className="desc">
+                <div className="descTitle">📄 Description</div>
+                <div className="descText">{openProduct.description}</div>
+              </div>
+            ) : null}
+
+            {(openProduct.options || []).length ? (
+              <div className="optArea">
+                <div className="optAreaTitle">⚙️ Options</div>
+
+                {(openProduct.options || []).map((opt) => (
+                  <div key={opt.name} className="optBlock">
+                    <div className="optName">{opt.label || opt.name}</div>
+
+                    {opt.type === "select" && (
+                      <div className="choices">
+                        {opt.choices.map((c) => {
+                          const active = selected?.[opt.name] === c.label;
+                          return (
+                            <button
+                              key={c.label}
+                              className={`choice ${active ? "active" : ""}`}
+                              onClick={() =>
+                                setSelected((s) => ({ ...s, [opt.name]: c.label }))
+                              }
+                              disabled={!openProduct.active}
+                            >
+                              {c.label}
+                              {Number(c.priceDelta || 0) !== 0 && (
+                                <span className="delta">
+                                  {c.priceDelta > 0 ? `+${euro(c.priceDelta)}` : euro(c.priceDelta)}€
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
             <div className="modalFoot">
               <div className="finalPrice">
@@ -523,10 +504,10 @@ export default function Page() {
 
               <button
                 className="cta"
-                disabled={!openProduct.isActive}
                 onClick={() => addToCart(openProduct, selected)}
+                disabled={!openProduct.active}
               >
-                {!openProduct.isActive ? "⏳ Réappro" : "➕ Ajouter au panier"}
+                {openProduct.active ? "➕ Ajouter au panier" : "⏳ Indisponible"}
               </button>
             </div>
           </div>
@@ -540,318 +521,98 @@ export default function Page() {
           --stroke:rgba(255,255,255,.08);
           --txt:#fff;
           --ok:#22c55e;
-          --warn:#f59e0b;
+          --warn:rgba(255,255,255,.14);
         }
-        html,body{
-          background:var(--bg);
-          color:var(--txt);
-          margin:0;
-          font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;
-        }
+        html,body{background:var(--bg);color:var(--txt);margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
         .wrap{padding:14px;padding-bottom:120px;}
         .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;}
         .brand{display:flex;align-items:center;gap:10px;}
-        .logo{
-          width:38px;height:38px;border-radius:12px;
-          background:var(--card);
-          display:grid;place-items:center;
-          border:1px solid var(--stroke);
-        }
+        .logo{width:38px;height:38px;border-radius:12px;background:var(--card);display:grid;place-items:center;border:1px solid var(--stroke);}
         .title{font-weight:900;line-height:1.1;}
         .subtitle{opacity:.7;font-size:12px;}
-        .totalPill{
-          background:var(--card);
-          border:1px solid var(--stroke);
-          border-radius:14px;
-          padding:8px 10px;
-          min-width:120px;
-          text-align:right;
-        }
+        .totalPill{background:var(--card);border:1px solid var(--stroke);border-radius:14px;padding:8px 10px;min-width:120px;text-align:right;}
         .muted{opacity:.7;font-size:12px;}
         .big{font-weight:900;}
-
         .cats{display:flex;gap:8px;overflow:auto;padding-bottom:8px;margin-bottom:10px;}
-        .chip{
-          border:1px solid var(--stroke);
-          background:transparent;color:var(--txt);
-          padding:8px 10px;border-radius:999px;
-          white-space:nowrap;
-        }
+        .chip{border:1px solid var(--stroke);background:transparent;color:var(--txt);padding:8px 10px;border-radius:999px;white-space:nowrap;}
         .chip.active{background:rgba(255,255,255,.12);}
-
         .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
         @media (min-width:900px){.grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
 
-        .card{
-          background:var(--card);
-          border:1px solid var(--stroke);
-          border-radius:16px;
-          overflow:hidden;
-        }
+        .card{background:var(--card);border:1px solid var(--stroke);border-radius:16px;overflow:hidden;}
+        .card.inactive{opacity:.85;}
 
-        .imgBtn{
-          padding:0;border:0;background:transparent;
-          width:100%;
-          cursor:pointer;
-          display:block;
-          position:relative; /* ✅ badge overlay */
-        }
-        .img{
-          width:100%;
-          height:170px;
-          object-fit:cover;
-          display:block;
-        }
-        .phWrap{
-          height:170px;
-          display:grid;
-          place-items:center;
-          background:rgba(255,255,255,.04);
-        }
-        .ph{font-size:34px;opacity:.85;}
+        .imgBtn{position:relative;padding:0;border:0;background:transparent;width:100%;cursor:pointer;display:block;}
+        .img{width:100%;height:170px;object-fit:cover;display:block;}
+        .ph{height:170px;display:grid;place-items:center;font-size:34px;background:rgba(255,255,255,.04);}
 
-        /* ✅ Badge SUPER lisible */
         .badge{
-          position:absolute;
-          left:10px;
-          bottom:10px;
-          display:inline-flex;
-          align-items:center;
-          gap:10px;
-          padding:10px 14px;
-          border-radius:999px;
-          background:rgba(0,0,0,.72);
-          border:1px solid rgba(255,255,255,.18);
-          box-shadow:
-            0 12px 26px rgba(0,0,0,.45),
-            0 2px 0 rgba(255,255,255,.06) inset;
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
+          position:absolute;left:10px;bottom:10px;
+          padding:7px 10px;border-radius:999px;
+          font-weight:900;font-size:12px;
+          border:1px solid var(--stroke);
+          backdrop-filter:blur(6px);
         }
-        .badgeTxt{
-          color:#fff;
-          font-weight:1000;
-          letter-spacing:.2px;
-          font-size:14px;
-          text-shadow: 0 2px 10px rgba(0,0,0,.9), 0 1px 1px rgba(0,0,0,.8);
-        }
-        .dot{
-          width:12px;height:12px;border-radius:50%;
-          background:var(--ok);
-          box-shadow: 0 0 0 3px rgba(34,197,94,.25), 0 0 14px rgba(34,197,94,.35);
-          flex:0 0 auto;
-        }
-        .badge.restock{
-          border-color: rgba(245,158,11,.55);
-          background: rgba(0,0,0,.78);
-        }
-        .badge.restock .dot{
-          background: var(--warn);
-          box-shadow: 0 0 0 3px rgba(245,158,11,.22), 0 0 14px rgba(245,158,11,.35);
-        }
+        .badge.stock{background:rgba(34,197,94,.25);border-color:rgba(34,197,94,.45);}
+        .badge.reappro{background:rgba(255,255,255,.10);}
 
         .cardBody{padding:10px;}
         .name{font-weight:900;margin-bottom:6px;}
         .meta{opacity:.75;font-size:12px;margin-bottom:10px;}
         .row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;}
         .price{font-weight:900;font-size:18px;}
-
-        .actions{
-          display:flex;
-          gap:8px;
-          align-items:center;
-          flex-wrap:wrap;
-          justify-content:flex-end;
-          min-width:0;
-        }
-        .btn{
-          border:1px solid var(--stroke);
-          background:rgba(255,255,255,.06);
-          color:var(--txt);
-          padding:8px 10px;
-          border-radius:12px;
-          font-weight:800;
-          cursor:pointer;
-          white-space:nowrap;
-          min-width:0;
-          flex:1 1 120px;
-        }
+        .actions{display:flex;gap:8px;align-items:center;}
+        .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);padding:8px 10px;border-radius:12px;font-weight:800;cursor:pointer;}
         .btn.ghost{background:transparent;}
-        .btn:disabled{opacity:.45;cursor:not-allowed;}
+        .btn.disabled{opacity:.55;cursor:not-allowed;}
 
-        @media (max-width: 380px){
-          .actions{flex-direction:column;align-items:stretch;}
-          .btn{width:100%;flex:1 1 auto;}
-        }
-
-        .cart{
-          position:fixed;left:0;right:0;bottom:0;
-          background:rgba(11,11,15,.85);
-          backdrop-filter:blur(10px);
-          border-top:1px solid var(--stroke);
-          padding:12px 14px;
-        }
+        .cart{position:fixed;left:0;right:0;bottom:0;background:rgba(11,11,15,.85);backdrop-filter:blur(10px);border-top:1px solid var(--stroke);padding:12px 14px;}
         .cartTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
         .cartTitle,.cartTotal{font-weight:900;}
         .empty{opacity:.7;font-size:13px;padding:6px 0 10px;}
         .cartList{max-height:180px;overflow:auto;padding-right:6px;margin-bottom:10px;}
-        .cartRow{
-          display:flex;justify-content:space-between;gap:10px;
-          border:1px solid var(--stroke);
-          border-radius:14px;
-          padding:10px;
-          margin-bottom:8px;
-          background:rgba(255,255,255,.04);
-        }
+        .cartRow{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--stroke);border-radius:14px;padding:10px;margin-bottom:8px;background:rgba(255,255,255,.04);}
         .cartName{font-weight:900;margin-bottom:4px;}
         .opts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
         .optTag{font-size:11px;border:1px solid var(--stroke);border-radius:999px;padding:3px 8px;opacity:.85;}
         .qty{display:flex;align-items:center;gap:8px;}
-        .qbtn{
-          width:34px;height:34px;border-radius:12px;
-          border:1px solid var(--stroke);
-          background:rgba(255,255,255,.06);
-          color:var(--txt);
-          font-size:18px;font-weight:900;
-        }
+        .qbtn{width:34px;height:34px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);font-size:18px;font-weight:900;}
         .qnum{min-width:18px;text-align:center;font-weight:900;}
-
-        .checkout{
-          width:100%;
-          border:none;
-          background:var(--ok);
-          color:#0b0b0f;
-          font-weight:900;
-          padding:12px 14px;
-          border-radius:14px;
-          cursor:pointer;
-        }
+        .checkout{width:100%;border:none;background:var(--ok);color:#0b0b0f;font-weight:900;padding:12px 14px;border-radius:14px;cursor:pointer;}
         .checkout:disabled{opacity:.5;cursor:not-allowed;}
 
-        .modalBack{
-          position:fixed;inset:0;
-          background:rgba(0,0,0,.6);
-          display:grid;
-          place-items:center;
-          padding:14px;
-        }
-
-        /* ✅ MODAL SCROLL FIX */
-        .modal{
-          width:min(560px,100%);
-          background:var(--card);
-          border:1px solid var(--stroke);
-          border-radius:18px;
-          display:flex;
-          flex-direction:column;
-          max-height: calc(100vh - 28px);
-          overflow:hidden;
-        }
-        .modalScroll{
-          overflow:auto;
-          -webkit-overflow-scrolling: touch;
-        }
-
-        .modalHead{
-          display:flex;
-          justify-content:space-between;
-          align-items:flex-start;
-          padding:12px;
-          border-bottom:1px solid var(--stroke);
-          gap:10px;
-          flex:0 0 auto;
-        }
+        .modalBack{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:14px;}
+        .modal{width:min(560px,100%);background:var(--card);border:1px solid var(--stroke);border-radius:18px;overflow:hidden;}
+        .modalHead{display:flex;justify-content:space-between;align-items:start;padding:12px;border-bottom:1px solid var(--stroke);gap:10px;}
         .modalTitle{font-weight:900;margin-bottom:4px;}
-        .close{
-          border:1px solid var(--stroke);
-          background:rgba(255,255,255,.06);
-          color:var(--txt);
-          border-radius:12px;
-          padding:8px 10px;
-          cursor:pointer;
-        }
+        .close{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);border-radius:12px;padding:8px 10px;cursor:pointer;}
+
+        .modalStatus{padding:10px 12px;border-bottom:1px solid var(--stroke);font-weight:900;}
+        .modalStatus.stock{background:rgba(34,197,94,.12);}
+        .modalStatus.reappro{background:rgba(255,255,255,.06);}
 
         .modalImgWrap{position:relative;}
-        .modalImg{
-          width:100%;
-          height:320px;
-          object-fit:cover;
-          display:block;
-          background:rgba(255,255,255,.04);
-        }
-        .openLink{
-          position:absolute;
-          right:10px;
-          bottom:10px;
-          font-weight:900;
-          text-decoration:none;
-          color:var(--txt);
-          background:rgba(0,0,0,.55);
-          border:1px solid rgba(255,255,255,.18);
-          padding:8px 10px;
-          border-radius:12px;
-          backdrop-filter:blur(8px);
-        }
+        .modalImg{width:100%;height:320px;object-fit:cover;display:block;background:rgba(255,255,255,.04);}
+        .openLink{position:absolute;right:10px;bottom:10px;font-weight:900;text-decoration:none;color:var(--txt);background:rgba(0,0,0,.45);border:1px solid var(--stroke);padding:8px 10px;border-radius:12px;backdrop-filter:blur(6px);}
 
         .desc{padding:12px;border-bottom:1px solid var(--stroke);}
         .descTitle{font-weight:900;margin-bottom:8px;}
-        .descText{
-          white-space:pre-wrap;
-          opacity:.92;
-          line-height:1.35;
-          font-size:14px;
-        }
+        .descText{white-space:pre-wrap;opacity:.92;line-height:1.35;font-size:14px;}
 
         .optArea{padding:12px;border-bottom:1px solid var(--stroke);}
         .optAreaTitle{font-weight:900;margin-bottom:10px;}
         .optBlock{margin-bottom:10px;}
         .optName{font-weight:900;margin-bottom:8px;}
-        .choices{display:flex;flex-wrap:wrap;gap:10px;}
+        .choices{display:flex;flex-wrap:wrap;gap:8px;}
+        .choice{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--txt);padding:10px 12px;border-radius:14px;font-weight:900;display:flex;align-items:center;gap:8px;cursor:pointer;}
+        .choice:disabled{opacity:.55;cursor:not-allowed;}
+        .choice.active{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.5);}
+        .delta{opacity:.85;font-size:12px;}
 
-        .choice{
-          border:1px solid rgba(255,255,255,.12);
-          background:rgba(255,255,255,.05);
-          color:var(--txt);
-          padding:12px 14px;
-          border-radius:16px;
-          font-weight:900;
-          cursor:pointer;
-          min-width:140px;
-          display:flex;
-          flex-direction:column;
-          align-items:flex-start;
-          gap:4px;
-        }
-        .choiceMain{font-size:16px;}
-        .choicePrice{font-size:13px;opacity:.9;}
-        .choice.active{
-          background:rgba(34,197,94,.22);
-          border-color:rgba(34,197,94,.55);
-          box-shadow: 0 0 0 2px rgba(34,197,94,.18) inset;
-        }
-
-        .modalFoot{
-          padding:12px;
-          display:flex;
-          justify-content:space-between;
-          align-items:center;
-          gap:10px;
-          flex:0 0 auto;
-          border-top:1px solid var(--stroke);
-          background: rgba(18,18,26,.85);
-          backdrop-filter: blur(10px);
-        }
+        .modalFoot{padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;}
         .finalPrice{font-weight:900;}
-        .cta{
-          border:none;
-          background:var(--ok);
-          color:#0b0b0f;
-          font-weight:900;
-          padding:10px 12px;
-          border-radius:14px;
-          cursor:pointer;
-        }
-        .cta:disabled{opacity:.5;cursor:not-allowed;}
+        .cta{border:none;background:var(--ok);color:#0b0b0f;font-weight:900;padding:10px 12px;border-radius:14px;cursor:pointer;}
+        .cta:disabled{opacity:.55;cursor:not-allowed;}
       `}</style>
     </div>
   );
