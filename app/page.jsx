@@ -34,19 +34,16 @@ function mapApiToUi(api) {
   const products = Array.isArray(api?.products) ? api.products : [];
 
   const out = [];
-
   for (const p of products) {
     if (!p) continue;
 
+    const isActive = p.active !== false;
     const catName =
       p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
     const description = String(p.longDesc || p.shortDesc || "").trim();
 
-    // ✅ Stock : active => En stock / En réappro
-    const inStock = p.active !== false;
-
-    // ✅ Variantes => choix en PRIX TOTAL (pas de +delta)
+    // variantes => choix (prix pleins, pas de "+X")
     if (Array.isArray(p.variants) && p.variants.length) {
       const vars = p.variants.filter((v) => v?.active !== false);
       if (vars.length) {
@@ -56,24 +53,25 @@ function mapApiToUi(api) {
         out.push({
           id: String(p.id),
           nom: p.title || "Produit",
-          categorie: catName,
-          description,
-          poids: p.weight || "",
-          inStock,
           photo: proxifyImage(p.image || ""),
           rawPhoto: p.image || "",
-          prix: Number(minPrice.toFixed(2)),
+          categorie: catName,
+          prix: Number(minPrice.toFixed(2)), // affichage carte = prix mini
+          poids: p.weight || "",
+          description,
+          isActive,
           options: [
             {
               name: "variante",
               label: "Choix",
               type: "select",
               required: true,
+              absolute: true, // ✅ IMPORTANT : prix absolu (pas delta)
               choices: vars.map((v) => {
                 const price = Number(v.salePrice ?? v.price ?? 0);
                 return {
                   label: v.label || v.weight || "Option",
-                  priceAbs: Number(price.toFixed(2)),
+                  price: Number(price.toFixed(2)),
                   variantId: v.id,
                 };
               }),
@@ -84,28 +82,26 @@ function mapApiToUi(api) {
       }
     }
 
-    // Produit simple sans variantes
     out.push({
       id: String(p.id),
       nom: p.title || "Produit",
-      categorie: catName,
-      description,
-      poids: p.weight || "",
-      inStock,
       photo: proxifyImage(p.image || ""),
       rawPhoto: p.image || "",
+      categorie: catName,
       prix: Number(Number(p.salePrice ?? p.price ?? 0).toFixed(2)),
+      poids: p.weight || "",
+      description,
+      isActive,
       options: Array.isArray(p.options) ? p.options : [],
     });
   }
-
-  out.sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
   return out;
 }
 
 function calcPrice(product, selected) {
-  const opts = Array.isArray(product?.options) ? product.options : [];
+  // base = prix carte
   let price = Number(product?.prix || 0);
+  const opts = Array.isArray(product?.options) ? product.options : [];
 
   for (const opt of opts) {
     const v = selected?.[opt.name];
@@ -113,8 +109,15 @@ function calcPrice(product, selected) {
 
     if (opt.type === "select") {
       const c = opt.choices?.find((x) => x.label === v);
-      if (c && typeof c.priceAbs === "number") price = Number(c.priceAbs);
-      else price += Number(c?.priceDelta || 0);
+      if (!c) continue;
+
+      // ✅ Si option "absolute" => le prix final = prix de la variante
+      if (opt.absolute && typeof c.price === "number") {
+        price = Number(c.price);
+      } else {
+        // compat ancienne logique delta
+        price += Number(c?.priceDelta || 0);
+      }
     }
   }
 
@@ -135,6 +138,7 @@ export default function Page() {
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // cache-buster stable (évite Date.now dans chaque <img>)
   const [imgBust, setImgBust] = useState(Date.now());
 
   // Telegram init
@@ -146,16 +150,6 @@ export default function Page() {
       w.expand();
     } catch {}
   }, []);
-
-  // Lock scroll body quand modal ouverte (évite scroll cassé)
-  useEffect(() => {
-    if (!openProduct) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [openProduct]);
 
   // Load catalog
   useEffect(() => {
@@ -200,20 +194,21 @@ export default function Page() {
     setOpenProduct(p);
   }
 
-  function quickAddOrOpen(p) {
-    if (!p?.inStock) {
-      openInfos(p);
+  // ✅ Ajout “intelligent” : si options => ouvre Infos, sinon ajoute direct
+  function quickAddOrOpen(product) {
+    if (!product?.isActive) {
+      openInfos(product);
       return;
     }
-    if (p?.options?.length) {
-      openInfos(p);
+    if (product?.options?.length) {
+      openInfos(product);
       return;
     }
-    addToCart(p, {});
+    addToCart(product, {});
   }
 
   function addToCart(product, sel) {
-    if (!product?.inStock) return;
+    if (!product?.isActive) return;
 
     const unitPrice = calcPrice(product, sel);
     const key = variantKey(product.id, sel);
@@ -328,27 +323,28 @@ export default function Page() {
       <div className="grid">
         {filtered.map((p) => (
           <div key={p.id} className="card">
-            <button className="imgBtn" onClick={() => openInfos(p)} aria-label="Ouvrir">
-              <div className={`imgWrap ${p.photo ? "" : "placeholder"}`}>
-                {p.photo ? (
-                  <img
-                    className="img"
-                    src={`${p.photo}${p.photo.includes("?") ? "&" : "?"}v=${imgBust}`}
-                    alt={p.nom}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    onError={(e) => {
-                      e.currentTarget.style.display = "none";
-                    }}
-                  />
-                ) : (
+            <button className="imgBtn" onClick={() => openInfos(p)}>
+              {p.photo ? (
+                <img
+                  className="img"
+                  src={`${p.photo}${p.photo.includes("?") ? "&" : "?"}v=${imgBust}`}
+                  alt={p.nom}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+              ) : (
+                <div className="phWrap">
                   <div className="ph">🍄</div>
-                )}
-
-                {/* ✅ Bandeau stock (PLUS VISIBLE) */}
-                <div className={`badge ${p.inStock ? "ok" : "no"}`}>
-                  {p.inStock ? "En stock" : "En réappro"}
                 </div>
+              )}
+
+              {/* ✅ Badge lisible SUR l'image */}
+              <div className={`badge ${p.isActive ? "stock" : "restock"}`}>
+                <span className="dot" />
+                <span className="badgeTxt">{p.isActive ? "En stock" : "En réappro"}</span>
               </div>
             </button>
 
@@ -370,10 +366,10 @@ export default function Page() {
                   <button
                     className="btn"
                     onClick={() => quickAddOrOpen(p)}
-                    disabled={!p.inStock}
-                    title={!p.inStock ? "Produit en réapprovisionnement" : "Ajouter"}
+                    disabled={!p.isActive}
+                    title={!p.isActive ? "Produit en réapprovisionnement" : ""}
                   >
-                    {p.inStock ? "➕ Ajouter" : "⏳ Réappro"}
+                    {!p.isActive ? "⏳ Réappro" : "➕ Ajouter"}
                   </button>
                 </div>
               </div>
@@ -442,44 +438,36 @@ export default function Page() {
                 <div className="muted">
                   {openProduct.categorie}
                   {openProduct.poids ? ` • ${openProduct.poids}` : ""}
+                  {!openProduct.isActive ? " • ⏳ Réappro" : ""}
                 </div>
               </div>
-
               <button className="close" onClick={() => setOpenProduct(null)}>
                 ✕
               </button>
             </div>
 
-            <div className="modalBody">
-              <div className="modalImgWrap">
-                {openProduct.photo ? (
+            <div className="modalScroll">
+              {openProduct.photo ? (
+                <div className="modalImgWrap">
                   <img
                     className="modalImg"
-                    src={`${openProduct.photo}${openProduct.photo.includes("?") ? "&" : "?"}v=${imgBust}`}
+                    src={`${openProduct.photo}${
+                      openProduct.photo.includes("?") ? "&" : "?"
+                    }v=${imgBust}`}
                     alt={openProduct.nom}
                     loading="lazy"
                     referrerPolicy="no-referrer"
                   />
-                ) : (
-                  <div className="modalImg placeholder">🍄</div>
-                )}
-
-                {/* ✅ Bandeau stock DANS l'image (PLUS VISIBLE) */}
-                <div className={`badge ${openProduct.inStock ? "ok" : "no"}`}>
-                  {openProduct.inStock ? "En stock" : "En réappro"}
-                </div>
-
-                {openProduct.photo ? (
                   <a
                     className="openLink"
-                    href={openProduct.rawPhoto || openProduct.photo}
+                    href={openProduct.photo}
                     target="_blank"
                     rel="noreferrer"
                   >
                     🔗 Ouvrir la photo
                   </a>
-                ) : null}
-              </div>
+                </div>
+              ) : null}
 
               {openProduct.description ? (
                 <div className="desc">
@@ -500,6 +488,13 @@ export default function Page() {
                         <div className="choices">
                           {opt.choices.map((c) => {
                             const active = selected?.[opt.name] === c.label;
+
+                            // ✅ Affichage "grammes + prix plein"
+                            const fullPrice =
+                              typeof c.price === "number"
+                                ? c.price
+                                : Number(openProduct.prix) + Number(c.priceDelta || 0);
+
                             return (
                               <button
                                 key={c.label}
@@ -508,18 +503,8 @@ export default function Page() {
                                   setSelected((s) => ({ ...s, [opt.name]: c.label }))
                                 }
                               >
-                                <span className="choiceLeft">{c.label}</span>
-
-                                {typeof c.priceAbs === "number" ? (
-                                  <span className="choicePrice">{euro(c.priceAbs)}€</span>
-                                ) : Number(c.priceDelta || 0) !== 0 ? (
-                                  <span className="choicePrice">
-                                    {c.priceDelta > 0
-                                      ? `+${euro(c.priceDelta)}`
-                                      : euro(c.priceDelta)}
-                                    €
-                                  </span>
-                                ) : null}
+                                <span className="choiceMain">{c.label}</span>
+                                <span className="choicePrice">{euro(fullPrice)} €</span>
                               </button>
                             );
                           })}
@@ -538,10 +523,10 @@ export default function Page() {
 
               <button
                 className="cta"
-                disabled={!openProduct.inStock}
+                disabled={!openProduct.isActive}
                 onClick={() => addToCart(openProduct, selected)}
               >
-                {openProduct.inStock ? "➕ Ajouter au panier" : "⏳ En réappro"}
+                {!openProduct.isActive ? "⏳ Réappro" : "➕ Ajouter au panier"}
               </button>
             </div>
           </div>
@@ -609,87 +594,61 @@ export default function Page() {
           width:100%;
           cursor:pointer;
           display:block;
+          position:relative; /* ✅ badge overlay */
         }
-        .imgWrap{
-          position:relative;
-          width:100%;
-          height:170px;
-          overflow:hidden;
-          background:rgba(255,255,255,.04);
-        }
-        .imgWrap.placeholder{
-          display:grid;
-          place-items:center;
-        }
-        .ph{font-size:34px;opacity:.85;}
-
         .img{
           width:100%;
           height:170px;
           object-fit:cover;
           display:block;
         }
-
-        /* ✅ Overlay pour lisibilité badge */
-        .imgWrap::after,
-        .modalImgWrap::after{
-          content:"";
-          position:absolute;
-          left:0; right:0; bottom:0;
-          height:56px;
-          background:linear-gradient(to top, rgba(0,0,0,.75), rgba(0,0,0,0));
-          pointer-events:none;
+        .phWrap{
+          height:170px;
+          display:grid;
+          place-items:center;
+          background:rgba(255,255,255,.04);
         }
+        .ph{font-size:34px;opacity:.85;}
 
-        /* ✅ Badge PLUS VISIBLE */
+        /* ✅ Badge SUPER lisible */
         .badge{
           position:absolute;
           left:10px;
           bottom:10px;
-          padding:8px 12px;
+          display:inline-flex;
+          align-items:center;
+          gap:10px;
+          padding:10px 14px;
           border-radius:999px;
-          font-weight:950;
-          font-size:13px;
-          letter-spacing:.2px;
-
+          background:rgba(0,0,0,.72);
           border:1px solid rgba(255,255,255,.18);
-          background:rgba(0,0,0,.75);
           box-shadow:
-            0 8px 18px rgba(0,0,0,.45),
-            0 0 0 1px rgba(0,0,0,.35) inset;
-
+            0 12px 26px rgba(0,0,0,.45),
+            0 2px 0 rgba(255,255,255,.06) inset;
           backdrop-filter: blur(10px);
           -webkit-backdrop-filter: blur(10px);
-
-          display:flex;
-          align-items:center;
-          gap:8px;
-
-          z-index:3;
         }
-
-        .badge::before{
-          content:"";
-          width:10px;
-          height:10px;
-          border-radius:999px;
-          background:rgba(255,255,255,.55);
-          box-shadow:0 0 0 2px rgba(0,0,0,.45);
+        .badgeTxt{
+          color:#fff;
+          font-weight:1000;
+          letter-spacing:.2px;
+          font-size:14px;
+          text-shadow: 0 2px 10px rgba(0,0,0,.9), 0 1px 1px rgba(0,0,0,.8);
         }
-
-        .badge.ok{
-          box-shadow:
-            0 8px 18px rgba(0,0,0,.45),
-            0 0 0 2px rgba(34,197,94,.45) inset;
+        .dot{
+          width:12px;height:12px;border-radius:50%;
+          background:var(--ok);
+          box-shadow: 0 0 0 3px rgba(34,197,94,.25), 0 0 14px rgba(34,197,94,.35);
+          flex:0 0 auto;
         }
-        .badge.ok::before{ background: rgba(34,197,94,.95); }
-
-        .badge.no{
-          box-shadow:
-            0 8px 18px rgba(0,0,0,.45),
-            0 0 0 2px rgba(245,158,11,.55) inset;
+        .badge.restock{
+          border-color: rgba(245,158,11,.55);
+          background: rgba(0,0,0,.78);
         }
-        .badge.no::before{ background: rgba(245,158,11,.95); }
+        .badge.restock .dot{
+          background: var(--warn);
+          box-shadow: 0 0 0 3px rgba(245,158,11,.22), 0 0 14px rgba(245,158,11,.35);
+        }
 
         .cardBody{padding:10px;}
         .name{font-weight:900;margin-bottom:6px;}
@@ -718,11 +677,11 @@ export default function Page() {
           flex:1 1 120px;
         }
         .btn.ghost{background:transparent;}
-        .btn:disabled{opacity:.5;cursor:not-allowed;}
+        .btn:disabled{opacity:.45;cursor:not-allowed;}
 
         @media (max-width: 380px){
           .actions{flex-direction:column;align-items:stretch;}
-          .btn{width:100%;flex: 1 1 auto;}
+          .btn{width:100%;flex:1 1 auto;}
         }
 
         .cart{
@@ -769,27 +728,30 @@ export default function Page() {
         }
         .checkout:disabled{opacity:.5;cursor:not-allowed;}
 
-        /* ✅ Modal scroll safe */
         .modalBack{
           position:fixed;inset:0;
           background:rgba(0,0,0,.6);
-          display:flex;
-          align-items:flex-start;
-          justify-content:center;
+          display:grid;
+          place-items:center;
           padding:14px;
-          overflow:auto;
-          -webkit-overflow-scrolling: touch;
         }
+
+        /* ✅ MODAL SCROLL FIX */
         .modal{
           width:min(560px,100%);
           background:var(--card);
           border:1px solid var(--stroke);
           border-radius:18px;
-          overflow:hidden;
-          max-height:92vh;
           display:flex;
           flex-direction:column;
+          max-height: calc(100vh - 28px);
+          overflow:hidden;
         }
+        .modalScroll{
+          overflow:auto;
+          -webkit-overflow-scrolling: touch;
+        }
+
         .modalHead{
           display:flex;
           justify-content:space-between;
@@ -809,12 +771,6 @@ export default function Page() {
           cursor:pointer;
         }
 
-        .modalBody{
-          overflow:auto;
-          -webkit-overflow-scrolling: touch;
-          overscroll-behavior: contain;
-        }
-
         .modalImgWrap{position:relative;}
         .modalImg{
           width:100%;
@@ -823,12 +779,6 @@ export default function Page() {
           display:block;
           background:rgba(255,255,255,.04);
         }
-        .modalImg.placeholder{
-          display:grid;
-          place-items:center;
-          font-size:42px;
-        }
-
         .openLink{
           position:absolute;
           right:10px;
@@ -836,13 +786,11 @@ export default function Page() {
           font-weight:900;
           text-decoration:none;
           color:var(--txt);
-          background:rgba(0,0,0,.45);
-          border:1px solid var(--stroke);
+          background:rgba(0,0,0,.55);
+          border:1px solid rgba(255,255,255,.18);
           padding:8px 10px;
           border-radius:12px;
-          backdrop-filter:blur(6px);
-          -webkit-backdrop-filter:blur(6px);
-          z-index:3;
+          backdrop-filter:blur(8px);
         }
 
         .desc{padding:12px;border-bottom:1px solid var(--stroke);}
@@ -858,28 +806,29 @@ export default function Page() {
         .optAreaTitle{font-weight:900;margin-bottom:10px;}
         .optBlock{margin-bottom:10px;}
         .optName{font-weight:900;margin-bottom:8px;}
+        .choices{display:flex;flex-wrap:wrap;gap:10px;}
 
-        .choices{display:flex;flex-wrap:wrap;gap:8px;}
         .choice{
-          border:1px solid var(--stroke);
+          border:1px solid rgba(255,255,255,.12);
           background:rgba(255,255,255,.05);
           color:var(--txt);
-          padding:10px 12px;
-          border-radius:14px;
+          padding:12px 14px;
+          border-radius:16px;
           font-weight:900;
-          display:flex;
-          align-items:center;
-          justify-content:space-between;
-          gap:10px;
           cursor:pointer;
-          min-width:120px;
+          min-width:140px;
+          display:flex;
+          flex-direction:column;
+          align-items:flex-start;
+          gap:4px;
         }
+        .choiceMain{font-size:16px;}
+        .choicePrice{font-size:13px;opacity:.9;}
         .choice.active{
           background:rgba(34,197,94,.22);
-          border-color:rgba(34,197,94,.5);
+          border-color:rgba(34,197,94,.55);
+          box-shadow: 0 0 0 2px rgba(34,197,94,.18) inset;
         }
-        .choiceLeft{opacity:.98;}
-        .choicePrice{opacity:.9;font-size:13px;}
 
         .modalFoot{
           padding:12px;
@@ -889,7 +838,8 @@ export default function Page() {
           gap:10px;
           flex:0 0 auto;
           border-top:1px solid var(--stroke);
-          background:rgba(0,0,0,.12);
+          background: rgba(18,18,26,.85);
+          backdrop-filter: blur(10px);
         }
         .finalPrice{font-weight:900;}
         .cta{
