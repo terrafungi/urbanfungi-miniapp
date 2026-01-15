@@ -38,17 +38,18 @@ function mapApiToUi(api) {
   for (const p of products) {
     if (!p) continue;
 
-    const catName = p.category || catById.get(String(p.categoryId))?.name || "Autres";
+    const catName =
+      p.category || catById.get(String(p.categoryId))?.name || "Autres";
+
     const description = String(p.longDesc || p.shortDesc || "").trim();
 
-    // ✅ Stock : on affiche toujours, mais "active" => En stock / En réappro
+    // ✅ Stock : active => En stock / En réappro
     const inStock = p.active !== false;
 
     // ✅ Variantes => choix en PRIX TOTAL (pas de +delta)
     if (Array.isArray(p.variants) && p.variants.length) {
       const vars = p.variants.filter((v) => v?.active !== false);
       if (vars.length) {
-        // Prix de base = plus petit prix (affichage carte)
         const prices = vars.map((v) => Number(v.salePrice ?? v.price ?? 0));
         const minPrice = Math.min(...prices);
 
@@ -59,14 +60,9 @@ function mapApiToUi(api) {
           description,
           poids: p.weight || "",
           inStock,
-
           photo: proxifyImage(p.image || ""),
           rawPhoto: p.image || "",
-
-          // Affichage carte = prix mini
           prix: Number(minPrice.toFixed(2)),
-
-          // Options = select avec prix ABSOLU
           options: [
             {
               name: "variante",
@@ -96,18 +92,14 @@ function mapApiToUi(api) {
       description,
       poids: p.weight || "",
       inStock,
-
       photo: proxifyImage(p.image || ""),
       rawPhoto: p.image || "",
-
       prix: Number(Number(p.salePrice ?? p.price ?? 0).toFixed(2)),
       options: Array.isArray(p.options) ? p.options : [],
     });
   }
 
-  // Tri stable (si présent)
-  out.sort((a, b) => (Number(a.sortOrder || 0) - Number(b.sortOrder || 0)));
-
+  out.sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
   return out;
 }
 
@@ -121,7 +113,6 @@ function calcPrice(product, selected) {
 
     if (opt.type === "select") {
       const c = opt.choices?.find((x) => x.label === v);
-      // ✅ Si prix absolu => on remplace le prix
       if (c && typeof c.priceAbs === "number") price = Number(c.priceAbs);
       else price += Number(c?.priceDelta || 0);
     }
@@ -144,7 +135,6 @@ export default function Page() {
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // cache-buster stable (évite Date.now dans chaque <img>)
   const [imgBust, setImgBust] = useState(Date.now());
 
   // Telegram init
@@ -157,7 +147,7 @@ export default function Page() {
     } catch {}
   }, []);
 
-  // Lock scroll body quand modal ouverte (pour éviter le scroll cassé)
+  // Lock scroll body quand modal ouverte (évite scroll cassé)
   useEffect(() => {
     if (!openProduct) return;
     const prev = document.body.style.overflow;
@@ -210,10 +200,6 @@ export default function Page() {
     setOpenProduct(p);
   }
 
-  // ✅ "Ajouter" intelligent :
-  // - si réappro => ouvre Infos (pas d’ajout)
-  // - si options => ouvre Infos
-  // - sinon => ajoute direct
   function quickAddOrOpen(p) {
     if (!p?.inStock) {
       openInfos(p);
@@ -264,7 +250,9 @@ export default function Page() {
   }
 
   function inc(key) {
-    setCart((prev) => prev.map((x) => (x.key === key ? { ...x, qty: x.qty + 1 } : x)));
+    setCart((prev) =>
+      prev.map((x) => (x.key === key ? { ...x, qty: x.qty + 1 } : x))
+    );
   }
 
   function sendOrderToBot() {
@@ -357,7 +345,7 @@ export default function Page() {
                   <div className="ph">🍄</div>
                 )}
 
-                {/* ✅ Bandeau DANS l'image */}
+                {/* ✅ Bandeau stock (PLUS VISIBLE) */}
                 <div className={`badge ${p.inStock ? "ok" : "no"}`}>
                   {p.inStock ? "En stock" : "En réappro"}
                 </div>
@@ -462,7 +450,6 @@ export default function Page() {
               </button>
             </div>
 
-            {/* ✅ Contenu scrollable */}
             <div className="modalBody">
               <div className="modalImgWrap">
                 {openProduct.photo ? (
@@ -477,12 +464,11 @@ export default function Page() {
                   <div className="modalImg placeholder">🍄</div>
                 )}
 
-                {/* ✅ Bandeau DANS l'image */}
+                {/* ✅ Bandeau stock DANS l'image (PLUS VISIBLE) */}
                 <div className={`badge ${openProduct.inStock ? "ok" : "no"}`}>
                   {openProduct.inStock ? "En stock" : "En réappro"}
                 </div>
 
-                {/* Lien photo : on tente raw si dispo */}
                 {openProduct.photo ? (
                   <a
                     className="openLink"
@@ -524,12 +510,14 @@ export default function Page() {
                               >
                                 <span className="choiceLeft">{c.label}</span>
 
-                                {/* ✅ PRIX TOTAL au lieu de +delta */}
                                 {typeof c.priceAbs === "number" ? (
                                   <span className="choicePrice">{euro(c.priceAbs)}€</span>
                                 ) : Number(c.priceDelta || 0) !== 0 ? (
                                   <span className="choicePrice">
-                                    {c.priceDelta > 0 ? `+${euro(c.priceDelta)}` : euro(c.priceDelta)}€
+                                    {c.priceDelta > 0
+                                      ? `+${euro(c.priceDelta)}`
+                                      : euro(c.priceDelta)}
+                                    €
                                   </span>
                                 ) : null}
                               </button>
@@ -642,21 +630,66 @@ export default function Page() {
           display:block;
         }
 
-        /* ✅ Bandeau dans l'image */
+        /* ✅ Overlay pour lisibilité badge */
+        .imgWrap::after,
+        .modalImgWrap::after{
+          content:"";
+          position:absolute;
+          left:0; right:0; bottom:0;
+          height:56px;
+          background:linear-gradient(to top, rgba(0,0,0,.75), rgba(0,0,0,0));
+          pointer-events:none;
+        }
+
+        /* ✅ Badge PLUS VISIBLE */
         .badge{
           position:absolute;
           left:10px;
           bottom:10px;
-          padding:6px 10px;
+          padding:8px 12px;
           border-radius:999px;
-          font-weight:900;
-          font-size:12px;
-          border:1px solid var(--stroke);
-          backdrop-filter: blur(6px);
-          background:rgba(0,0,0,.45);
+          font-weight:950;
+          font-size:13px;
+          letter-spacing:.2px;
+
+          border:1px solid rgba(255,255,255,.18);
+          background:rgba(0,0,0,.75);
+          box-shadow:
+            0 8px 18px rgba(0,0,0,.45),
+            0 0 0 1px rgba(0,0,0,.35) inset;
+
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+
+          display:flex;
+          align-items:center;
+          gap:8px;
+
+          z-index:3;
         }
-        .badge.ok{box-shadow:0 0 0 2px rgba(34,197,94,.25) inset;}
-        .badge.no{box-shadow:0 0 0 2px rgba(245,158,11,.25) inset;}
+
+        .badge::before{
+          content:"";
+          width:10px;
+          height:10px;
+          border-radius:999px;
+          background:rgba(255,255,255,.55);
+          box-shadow:0 0 0 2px rgba(0,0,0,.45);
+        }
+
+        .badge.ok{
+          box-shadow:
+            0 8px 18px rgba(0,0,0,.45),
+            0 0 0 2px rgba(34,197,94,.45) inset;
+        }
+        .badge.ok::before{ background: rgba(34,197,94,.95); }
+
+        .badge.no{
+          box-shadow:
+            0 8px 18px rgba(0,0,0,.45),
+            0 0 0 2px rgba(245,158,11,.55) inset;
+        }
+        .badge.no::before{ background: rgba(245,158,11,.95); }
 
         .cardBody{padding:10px;}
         .name{font-weight:900;margin-bottom:6px;}
@@ -795,6 +828,7 @@ export default function Page() {
           place-items:center;
           font-size:42px;
         }
+
         .openLink{
           position:absolute;
           right:10px;
@@ -807,6 +841,8 @@ export default function Page() {
           padding:8px 10px;
           border-radius:12px;
           backdrop-filter:blur(6px);
+          -webkit-backdrop-filter:blur(6px);
+          z-index:3;
         }
 
         .desc{padding:12px;border-bottom:1px solid var(--stroke);}
