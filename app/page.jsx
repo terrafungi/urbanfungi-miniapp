@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import fallbackRaw from "./products.json";
 
+// ⚠️ Gardez votre URL PHP ici (catalog.php qui renvoie le JSON)
 const CATALOG_URL =
   process.env.NEXT_PUBLIC_CATALOG_URL || "https://urbfgi.fun/api/catalog.php";
 
@@ -10,15 +11,13 @@ function getWebApp() {
   if (typeof window === "undefined") return null;
   return window.Telegram?.WebApp ?? null;
 }
-
 function euro(n) {
   return Number(n || 0).toFixed(2);
 }
-
-function proxifyImage(url) {
-  if (!url || typeof url !== "string") return "";
-  if (!url.startsWith("http")) return url;
-  return `/api/img?u=${encodeURIComponent(url)}`;
+function normalizeFallback(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (raw && Array.isArray(raw.products)) return raw.products;
+  return [];
 }
 
 function mapApiToUi(api) {
@@ -30,65 +29,56 @@ function mapApiToUi(api) {
   for (const p of products) {
     if (!p) continue;
 
-    const active = p.active !== false; // ✅ ON NE FILTRE PLUS
     const catName =
       p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
-    const description = String(p.longDesc || p.shortDesc || "").trim();
+    // ✅ Description unique : on privilégie longDesc, sinon shortDesc
+    const description = (p.longDesc || p.shortDesc || "").trim();
 
-    // variantes => option select (seulement les variantes actives pour commander)
+    // Variantes -> option select
     let options = Array.isArray(p.options) ? p.options : [];
+    let basePrice = Number(p.salePrice ?? p.price ?? 0);
 
     if (Array.isArray(p.variants) && p.variants.length) {
-      const vars = p.variants.filter((v) => v?.active !== false);
-      if (vars.length) {
-        const prices = vars.map((v) => Number(v.salePrice ?? v.price ?? 0));
-        const minPrice = Math.min(...prices);
+      const vars = p.variants.map((v) => ({
+        id: v.id,
+        label: v.label || v.weight || "Option",
+        price: Number(v.salePrice ?? v.price ?? 0),
+        active: v.active !== false,
+      }));
 
-        options = [
-          {
-            name: "variante",
-            label: "Choix",
-            type: "select",
-            required: true,
-            choices: vars.map((v) => {
-              const price = Number(v.salePrice ?? v.price ?? 0);
-              return {
-                label: v.label || v.weight || "Option",
-                priceDelta: Number((price - minPrice).toFixed(2)),
-                variantId: v.id,
-              };
-            }),
-          },
-        ];
+      const activeVars = vars.filter((v) => v.active);
+      const list = activeVars.length ? activeVars : vars;
 
-        out.push({
-          id: String(p.id),
-          nom: p.title || "Produit",
-          photo: proxifyImage(p.image || ""),
-          rawPhoto: p.image || "",
-          categorie: catName,
-          prix: Number(minPrice.toFixed(2)),
-          poids: p.weight || "",
-          description,
-          options,
-          active,
-        });
-        continue;
-      }
+      const prices = list.map((v) => v.price);
+      const minPrice = Math.min(...prices);
+
+      basePrice = Number(minPrice.toFixed(2));
+      options = [
+        {
+          name: "variante",
+          label: "Choix",
+          type: "select",
+          required: true,
+          choices: list.map((v) => ({
+            label: v.label,
+            priceDelta: Number((v.price - minPrice).toFixed(2)),
+            variantId: v.id,
+          })),
+        },
+      ];
     }
 
     out.push({
       id: String(p.id),
       nom: p.title || "Produit",
-      photo: proxifyImage(p.image || ""),
-      rawPhoto: p.image || "",
+      photo: p.image || "",
       categorie: catName,
-      prix: Number(Number(p.salePrice ?? p.price ?? 0).toFixed(2)),
+      prix: Number(basePrice.toFixed(2)),
       poids: p.weight || "",
       description,
+      active: p.active !== false, // ✅ on affiche aussi les non actifs
       options,
-      active,
     });
   }
   return out;
@@ -115,25 +105,16 @@ function variantKey(productId, selected) {
 }
 
 export default function Page() {
-  const [products, setProducts] = useState([]);
+  const initialFallback = useMemo(() => normalizeFallback(fallbackRaw), []);
+  const [products, setProducts] = useState(initialFallback);
+
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]);
+
+  // ✅ Fiche produit (modal)
   const [openProduct, setOpenProduct] = useState(null);
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [imgBust, setImgBust] = useState(Date.now());
-
-  // Fallback local si besoin
-  useEffect(() => {
-    try {
-      if (fallbackRaw?.products || fallbackRaw?.categories) {
-        const mapped = mapApiToUi(fallbackRaw);
-        if (mapped.length) setProducts(mapped);
-      } else if (Array.isArray(fallbackRaw) && fallbackRaw.length) {
-        setProducts(fallbackRaw);
-      }
-    } catch {}
-  }, []);
 
   // Telegram init
   useEffect(() => {
@@ -145,17 +126,14 @@ export default function Page() {
     } catch {}
   }, []);
 
-  // Load catalog
+  // Charge catalogue
   useEffect(() => {
     const url = `${CATALOG_URL}?v=${Date.now()}`;
     fetch(url, { cache: "no-store" })
       .then((r) => r.json())
       .then((api) => {
         const mapped = mapApiToUi(api);
-        if (Array.isArray(mapped) && mapped.length) {
-          setProducts(mapped);
-          setImgBust(Date.now());
-        }
+        if (Array.isArray(mapped)) setProducts(mapped);
       })
       .catch(() => {});
   }, []);
@@ -176,7 +154,8 @@ export default function Page() {
     return cart.reduce((sum, i) => sum + Number(i.unitPrice) * Number(i.qty), 0);
   }, [cart]);
 
-  function openInfos(p) {
+  // ✅ ouvrir fiche produit (et init sélection options)
+  function openDetails(p) {
     const opts = Array.isArray(p?.options) ? p.options : [];
     const init = {};
     for (const opt of opts) {
@@ -189,8 +168,6 @@ export default function Page() {
   }
 
   function addToCart(product, sel) {
-    if (!product?.active) return; // ✅ bloque achat si non actif
-
     const unitPrice = calcPrice(product, sel);
     const key = variantKey(product.id, sel);
 
@@ -203,14 +180,7 @@ export default function Page() {
       }
       return [
         ...prev,
-        {
-          key,
-          id: product.id,
-          nom: product.nom,
-          unitPrice,
-          selected: sel,
-          qty: 1,
-        },
+        { key, id: product.id, nom: product.nom, unitPrice, selected: sel, qty: 1 },
       ];
     });
 
@@ -224,21 +194,16 @@ export default function Page() {
         .filter((x) => x.qty > 0)
     );
   }
-
   function inc(key) {
-    setCart((prev) =>
-      prev.map((x) => (x.key === key ? { ...x, qty: x.qty + 1 } : x))
-    );
+    setCart((prev) => prev.map((x) => (x.key === key ? { ...x, qty: x.qty + 1 } : x)));
   }
 
   function sendOrderToBot() {
     const w = getWebApp();
-
     if (!w) {
       alert("Mini-App Telegram non détectée. Ouvrez depuis le bot.");
       return;
     }
-
     if (!cart.length || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -257,13 +222,9 @@ export default function Page() {
 
     try {
       w.sendData(JSON.stringify(payload));
-
       w.showAlert("✅ Commande envoyée au bot. Retour au chat…", () => {
-        try {
-          w.close();
-        } catch {}
+        try { w.close(); } catch {}
       });
-
       setCart([]);
     } catch (e) {
       console.error(e);
@@ -303,12 +264,12 @@ export default function Page() {
 
       <div className="grid">
         {filtered.map((p) => (
-          <div key={p.id} className={`card ${p.active ? "" : "inactive"}`}>
-            <button className="imgBtn" onClick={() => openInfos(p)}>
+          <div key={p.id} className="card">
+            <div className="imgWrap" onClick={() => openDetails(p)}>
               {p.photo ? (
                 <img
                   className="img"
-                  src={`${p.photo}${p.photo.includes("?") ? "&" : "?"}v=${imgBust}`}
+                  src={`${p.photo}?v=${Date.now()}`}
                   alt={p.nom}
                   loading="lazy"
                   referrerPolicy="no-referrer"
@@ -317,13 +278,13 @@ export default function Page() {
                   }}
                 />
               ) : (
-                <div className="ph">🍄</div>
+                <div className="imgPlaceholder">📷</div>
               )}
 
-              <div className={`badge ${p.active ? "stock" : "reappro"}`}>
-                {p.active ? "✅ En stock" : "⏳ Réappro"}
+              <div className={`badge ${p.active ? "ok" : "ko"}`}>
+                {p.active ? "EN STOCK" : "RÉAPPRO"}
               </div>
-            </button>
+            </div>
 
             <div className="cardBody">
               <div className="name">{p.nom}</div>
@@ -331,31 +292,11 @@ export default function Page() {
                 {p.categorie}
                 {p.poids ? ` • ${p.poids}` : ""}
               </div>
-
               <div className="row">
                 <div className="price">{euro(p.prix)} €</div>
-
-                <div className="actions">
-                  <button className="btn ghost" onClick={() => openInfos(p)}>
-                    ℹ️ Infos
-                  </button>
-
-                  {p.active ? (
-                    p.options?.length ? (
-                      <button className="btn" onClick={() => openInfos(p)}>
-                        ⚙️ Options
-                      </button>
-                    ) : (
-                      <button className="btn" onClick={() => addToCart(p, {})}>
-                        ➕ Ajouter
-                      </button>
-                    )
-                  ) : (
-                    <button className="btn disabled" disabled>
-                      ⏳ Réappro
-                    </button>
-                  )}
-                </div>
+                <button className="btn" onClick={() => openDetails(p)}>
+                  ➕ / ℹ️
+                </button>
               </div>
             </div>
           </div>
@@ -376,7 +317,6 @@ export default function Page() {
               <div className="cartRow" key={i.key}>
                 <div className="left">
                   <div className="cartName">{i.nom}</div>
-
                   {i.selected && Object.keys(i.selected).length > 0 && (
                     <div className="opts">
                       {Object.entries(i.selected).map(([k, v]) => (
@@ -386,33 +326,24 @@ export default function Page() {
                       ))}
                     </div>
                   )}
-
                   <div className="muted">{euro(i.unitPrice)} € / unité</div>
                 </div>
-
                 <div className="qty">
-                  <button className="qbtn" onClick={() => dec(i.key)}>
-                    −
-                  </button>
+                  <button className="qbtn" onClick={() => dec(i.key)}>−</button>
                   <div className="qnum">{i.qty}</div>
-                  <button className="qbtn" onClick={() => inc(i.key)}>
-                    +
-                  </button>
+                  <button className="qbtn" onClick={() => inc(i.key)}>+</button>
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        <button
-          className="checkout"
-          disabled={!cart.length || isSubmitting}
-          onClick={sendOrderToBot}
-        >
+        <button className="checkout" disabled={!cart.length || isSubmitting} onClick={sendOrderToBot}>
           {isSubmitting ? "⏳ Envoi…" : "✅ Commander (Bitcoin / Transcash)"}
         </button>
       </div>
 
+      {/* ✅ FICHE PRODUIT (scroll OK) */}
       {openProduct && (
         <div className="modalBack" onClick={() => setOpenProduct(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -420,94 +351,69 @@ export default function Page() {
               <div>
                 <div className="modalTitle">{openProduct.nom}</div>
                 <div className="muted">
-                  {openProduct.categorie}
-                  {openProduct.poids ? ` • ${openProduct.poids}` : ""}
+                  {openProduct.active ? "En stock" : "En réappro"} • {euro(openProduct.prix)} €
                 </div>
               </div>
-              <button className="close" onClick={() => setOpenProduct(null)}>
-                ✕
-              </button>
+              <button className="close" onClick={() => setOpenProduct(null)}>✕</button>
             </div>
 
-            <div className={`modalStatus ${openProduct.active ? "stock" : "reappro"}`}>
-              {openProduct.active ? "✅ En stock" : "⏳ Réapprovisionnement"}
-            </div>
-
-            {openProduct.photo ? (
-              <div className="modalImgWrap">
+            {/* ✅ Zone scrollable */}
+            <div className="modalBody">
+              {openProduct.photo ? (
                 <img
                   className="modalImg"
-                  src={`${openProduct.photo}${openProduct.photo.includes("?") ? "&" : "?"}v=${imgBust}`}
+                  src={`${openProduct.photo}?v=${Date.now()}`}
                   alt={openProduct.nom}
                   loading="lazy"
                   referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
                 />
-                <a
-                  className="openLink"
-                  href={openProduct.rawPhoto || openProduct.photo}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  🔗 Ouvrir la photo
-                </a>
-              </div>
-            ) : null}
+              ) : null}
 
-            {openProduct.description ? (
-              <div className="desc">
-                <div className="descTitle">📄 Description</div>
-                <div className="descText">{openProduct.description}</div>
-              </div>
-            ) : null}
+              {openProduct.description ? (
+                <div className="desc">
+                  <div className="descTitle">Description</div>
+                  <div className="descText">{openProduct.description}</div>
+                </div>
+              ) : null}
 
-            {(openProduct.options || []).length ? (
-              <div className="optArea">
-                <div className="optAreaTitle">⚙️ Options</div>
+              {(openProduct.options || []).map((opt) => (
+                <div key={opt.name} className="optBlock">
+                  <div className="optName">{opt.label || opt.name}</div>
 
-                {(openProduct.options || []).map((opt) => (
-                  <div key={opt.name} className="optBlock">
-                    <div className="optName">{opt.label || opt.name}</div>
-
-                    {opt.type === "select" && (
-                      <div className="choices">
-                        {opt.choices.map((c) => {
-                          const active = selected?.[opt.name] === c.label;
-                          return (
-                            <button
-                              key={c.label}
-                              className={`choice ${active ? "active" : ""}`}
-                              onClick={() =>
-                                setSelected((s) => ({ ...s, [opt.name]: c.label }))
-                              }
-                              disabled={!openProduct.active}
-                            >
-                              {c.label}
-                              {Number(c.priceDelta || 0) !== 0 && (
-                                <span className="delta">
-                                  {c.priceDelta > 0 ? `+${euro(c.priceDelta)}` : euro(c.priceDelta)}€
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : null}
+                  {opt.type === "select" && (
+                    <div className="choices">
+                      {opt.choices.map((c) => {
+                        const active = selected?.[opt.name] === c.label;
+                        return (
+                          <button
+                            key={c.label}
+                            className={`choice ${active ? "active" : ""}`}
+                            onClick={() => setSelected((s) => ({ ...s, [opt.name]: c.label }))}
+                          >
+                            {c.label}
+                            {Number(c.priceDelta || 0) !== 0 && (
+                              <span className="delta">
+                                {c.priceDelta > 0 ? `+${euro(c.priceDelta)}` : euro(c.priceDelta)}€
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
 
             <div className="modalFoot">
               <div className="finalPrice">
                 Prix: <b>{euro(calcPrice(openProduct, selected))} €</b>
               </div>
-
-              <button
-                className="cta"
-                onClick={() => addToCart(openProduct, selected)}
-                disabled={!openProduct.active}
-              >
-                {openProduct.active ? "➕ Ajouter au panier" : "⏳ Indisponible"}
+              <button className="cta" onClick={() => addToCart(openProduct, selected)}>
+                ➕ Ajouter au panier
               </button>
             </div>
           </div>
@@ -515,14 +421,7 @@ export default function Page() {
       )}
 
       <style jsx global>{`
-        :root{
-          --bg:#0b0b0f;
-          --card:#12121a;
-          --stroke:rgba(255,255,255,.08);
-          --txt:#fff;
-          --ok:#22c55e;
-          --warn:rgba(255,255,255,.14);
-        }
+        :root{--bg:#0b0b0f;--card:#12121a;--stroke:rgba(255,255,255,.08);--txt:#fff;}
         html,body{background:var(--bg);color:var(--txt);margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
         .wrap{padding:14px;padding-bottom:120px;}
         .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;}
@@ -536,35 +435,24 @@ export default function Page() {
         .cats{display:flex;gap:8px;overflow:auto;padding-bottom:8px;margin-bottom:10px;}
         .chip{border:1px solid var(--stroke);background:transparent;color:var(--txt);padding:8px 10px;border-radius:999px;white-space:nowrap;}
         .chip.active{background:rgba(255,255,255,.12);}
+
         .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
         @media (min-width:900px){.grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
 
         .card{background:var(--card);border:1px solid var(--stroke);border-radius:16px;overflow:hidden;}
-        .card.inactive{opacity:.85;}
-
-        .imgBtn{position:relative;padding:0;border:0;background:transparent;width:100%;cursor:pointer;display:block;}
-        .img{width:100%;height:170px;object-fit:cover;display:block;}
-        .ph{height:170px;display:grid;place-items:center;font-size:34px;background:rgba(255,255,255,.04);}
-
-        .badge{
-          position:absolute;left:10px;bottom:10px;
-          padding:7px 10px;border-radius:999px;
-          font-weight:900;font-size:12px;
-          border:1px solid var(--stroke);
-          backdrop-filter:blur(6px);
-        }
-        .badge.stock{background:rgba(34,197,94,.25);border-color:rgba(34,197,94,.45);}
-        .badge.reappro{background:rgba(255,255,255,.10);}
+        .imgWrap{position:relative;cursor:pointer;}
+        .img{width:100%;height:150px;object-fit:cover;display:block;}
+        .imgPlaceholder{height:150px;display:grid;place-items:center;opacity:.6;border-bottom:1px solid var(--stroke);}
+        .badge{position:absolute;left:10px;bottom:10px;font-size:11px;font-weight:900;padding:6px 10px;border-radius:999px;border:1px solid var(--stroke);backdrop-filter:blur(6px);}
+        .badge.ok{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.5);}
+        .badge.ko{background:rgba(249,115,22,.22);border-color:rgba(249,115,22,.5);}
 
         .cardBody{padding:10px;}
         .name{font-weight:900;margin-bottom:6px;}
         .meta{opacity:.75;font-size:12px;margin-bottom:10px;}
-        .row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;}
-        .price{font-weight:900;font-size:18px;}
-        .actions{display:flex;gap:8px;align-items:center;}
-        .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);padding:8px 10px;border-radius:12px;font-weight:800;cursor:pointer;}
-        .btn.ghost{background:transparent;}
-        .btn.disabled{opacity:.55;cursor:not-allowed;}
+        .row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+        .price{font-weight:900;}
+        .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);padding:8px 10px;border-radius:12px;font-weight:800;}
 
         .cart{position:fixed;left:0;right:0;bottom:0;background:rgba(11,11,15,.85);backdrop-filter:blur(10px);border-top:1px solid var(--stroke);padding:12px 14px;}
         .cartTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
@@ -578,41 +466,51 @@ export default function Page() {
         .qty{display:flex;align-items:center;gap:8px;}
         .qbtn{width:34px;height:34px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);font-size:18px;font-weight:900;}
         .qnum{min-width:18px;text-align:center;font-weight:900;}
-        .checkout{width:100%;border:none;background:var(--ok);color:#0b0b0f;font-weight:900;padding:12px 14px;border-radius:14px;cursor:pointer;}
+        .checkout{width:100%;border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:12px 14px;border-radius:14px;cursor:pointer;}
         .checkout:disabled{opacity:.5;cursor:not-allowed;}
 
+        /* ✅ MODAL + SCROLL FIX */
         .modalBack{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:14px;}
-        .modal{width:min(560px,100%);background:var(--card);border:1px solid var(--stroke);border-radius:18px;overflow:hidden;}
-        .modalHead{display:flex;justify-content:space-between;align-items:start;padding:12px;border-bottom:1px solid var(--stroke);gap:10px;}
+        .modal{
+          width:min(520px,100%);
+          background:var(--card);
+          border:1px solid var(--stroke);
+          border-radius:18px;
+          overflow:hidden;
+
+          display:flex;
+          flex-direction:column;
+          max-height:86vh; /* ✅ limite */
+        }
+        .modalHead{flex:0 0 auto;display:flex;justify-content:space-between;align-items:start;padding:12px;border-bottom:1px solid var(--stroke);}
         .modalTitle{font-weight:900;margin-bottom:4px;}
-        .close{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);border-radius:12px;padding:8px 10px;cursor:pointer;}
+        .close{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);border-radius:12px;padding:8px 10px;}
 
-        .modalStatus{padding:10px 12px;border-bottom:1px solid var(--stroke);font-weight:900;}
-        .modalStatus.stock{background:rgba(34,197,94,.12);}
-        .modalStatus.reappro{background:rgba(255,255,255,.06);}
+        .modalBody{
+          flex:1 1 auto;
+          overflow:auto;               /* ✅ scroll */
+          -webkit-overflow-scrolling:touch;
+          overscroll-behavior:contain;
+          padding:12px;
+          gap:12px;
+          display:flex;
+          flex-direction:column;
+        }
+        .modalImg{width:100%;max-height:260px;object-fit:cover;border-radius:14px;border:1px solid var(--stroke);}
+        .desc{border:1px solid var(--stroke);border-radius:14px;padding:10px;background:rgba(255,255,255,.04);}
+        .descTitle{font-weight:900;margin-bottom:6px;}
+        .descText{opacity:.9;white-space:pre-wrap;line-height:1.35;font-size:13px;}
 
-        .modalImgWrap{position:relative;}
-        .modalImg{width:100%;height:320px;object-fit:cover;display:block;background:rgba(255,255,255,.04);}
-        .openLink{position:absolute;right:10px;bottom:10px;font-weight:900;text-decoration:none;color:var(--txt);background:rgba(0,0,0,.45);border:1px solid var(--stroke);padding:8px 10px;border-radius:12px;backdrop-filter:blur(6px);}
-
-        .desc{padding:12px;border-bottom:1px solid var(--stroke);}
-        .descTitle{font-weight:900;margin-bottom:8px;}
-        .descText{white-space:pre-wrap;opacity:.92;line-height:1.35;font-size:14px;}
-
-        .optArea{padding:12px;border-bottom:1px solid var(--stroke);}
-        .optAreaTitle{font-weight:900;margin-bottom:10px;}
-        .optBlock{margin-bottom:10px;}
+        .optBlock{border:1px solid var(--stroke);border-radius:14px;padding:10px;background:rgba(255,255,255,.03);}
         .optName{font-weight:900;margin-bottom:8px;}
         .choices{display:flex;flex-wrap:wrap;gap:8px;}
-        .choice{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--txt);padding:10px 12px;border-radius:14px;font-weight:900;display:flex;align-items:center;gap:8px;cursor:pointer;}
-        .choice:disabled{opacity:.55;cursor:not-allowed;}
+        .choice{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--txt);padding:10px 12px;border-radius:14px;font-weight:900;display:flex;align-items:center;gap:8px;}
         .choice.active{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.5);}
         .delta{opacity:.85;font-size:12px;}
 
-        .modalFoot{padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;}
+        .modalFoot{flex:0 0 auto;padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;border-top:1px solid var(--stroke);}
         .finalPrice{font-weight:900;}
-        .cta{border:none;background:var(--ok);color:#0b0b0f;font-weight:900;padding:10px 12px;border-radius:14px;cursor:pointer;}
-        .cta:disabled{opacity:.55;cursor:not-allowed;}
+        .cta{border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:10px 12px;border-radius:14px;cursor:pointer;}
       `}</style>
     </div>
   );
