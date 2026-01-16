@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import fallbackRaw from "./products.json";
 
-// ⚠️ Gardez votre URL PHP ici (catalog.php qui renvoie le JSON)
 const CATALOG_URL =
   process.env.NEXT_PUBLIC_CATALOG_URL || "https://urbfgi.fun/api/catalog.php";
 
@@ -32,10 +31,12 @@ function mapApiToUi(api) {
     const catName =
       p.category || catById.get(String(p.categoryId))?.name || "Autres";
 
-    // ✅ Description unique : on privilégie longDesc, sinon shortDesc
     const description = (p.longDesc || p.shortDesc || "").trim();
 
-    // Variantes -> option select
+    // ✅ on affiche aussi les non actifs (réappro)
+    const isActive = p.active !== false;
+
+    // options / variantes
     let options = Array.isArray(p.options) ? p.options : [];
     let basePrice = Number(p.salePrice ?? p.price ?? 0);
 
@@ -50,10 +51,10 @@ function mapApiToUi(api) {
       const activeVars = vars.filter((v) => v.active);
       const list = activeVars.length ? activeVars : vars;
 
-      const prices = list.map((v) => v.price);
-      const minPrice = Math.min(...prices);
+      // ✅ prix affiché = prix de la 1ère variante (souvent 1g)
+      basePrice = Number((list[0]?.price ?? 0).toFixed(2));
 
-      basePrice = Number(minPrice.toFixed(2));
+      // ✅ choix avec PRIX TOTAL (pas de delta)
       options = [
         {
           name: "variante",
@@ -62,7 +63,7 @@ function mapApiToUi(api) {
           required: true,
           choices: list.map((v) => ({
             label: v.label,
-            priceDelta: Number((v.price - minPrice).toFixed(2)),
+            price: Number((v.price ?? 0).toFixed(2)),
             variantId: v.id,
           })),
         },
@@ -77,13 +78,14 @@ function mapApiToUi(api) {
       prix: Number(basePrice.toFixed(2)),
       poids: p.weight || "",
       description,
-      active: p.active !== false, // ✅ on affiche aussi les non actifs
+      active: isActive,
       options,
     });
   }
   return out;
 }
 
+// ✅ prix final = prix TOTAL de la variante sélectionnée (si présent)
 function calcPrice(product, selected) {
   let price = Number(product?.prix || 0);
   const opts = Array.isArray(product?.options) ? product.options : [];
@@ -94,7 +96,12 @@ function calcPrice(product, selected) {
 
     if (opt.type === "select") {
       const c = opt.choices?.find((x) => x.label === v);
-      price += Number(c?.priceDelta || 0);
+      if (c && typeof c.price === "number") {
+        price = Number(c.price || 0); // ✅ ABSOLU
+      } else {
+        // rétro-compat si jamais on a encore priceDelta
+        price += Number(c?.priceDelta || 0);
+      }
     }
   }
   return Number(price.toFixed(2));
@@ -111,12 +118,10 @@ export default function Page() {
   const [cat, setCat] = useState("Tous");
   const [cart, setCart] = useState([]);
 
-  // ✅ Fiche produit (modal)
   const [openProduct, setOpenProduct] = useState(null);
   const [selected, setSelected] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Telegram init
   useEffect(() => {
     const w = getWebApp();
     if (!w) return;
@@ -126,7 +131,6 @@ export default function Page() {
     } catch {}
   }, []);
 
-  // Charge catalogue
   useEffect(() => {
     const url = `${CATALOG_URL}?v=${Date.now()}`;
     fetch(url, { cache: "no-store" })
@@ -154,7 +158,6 @@ export default function Page() {
     return cart.reduce((sum, i) => sum + Number(i.unitPrice) * Number(i.qty), 0);
   }, [cart]);
 
-  // ✅ ouvrir fiche produit (et init sélection options)
   function openDetails(p) {
     const opts = Array.isArray(p?.options) ? p.options : [];
     const init = {};
@@ -168,6 +171,9 @@ export default function Page() {
   }
 
   function addToCart(product, sel) {
+    // ✅ blocage réappro
+    if (!product?.active) return;
+
     const unitPrice = calcPrice(product, sel);
     const key = variantKey(product.id, sel);
 
@@ -223,7 +229,9 @@ export default function Page() {
     try {
       w.sendData(JSON.stringify(payload));
       w.showAlert("✅ Commande envoyée au bot. Retour au chat…", () => {
-        try { w.close(); } catch {}
+        try {
+          w.close();
+        } catch {}
       });
       setCart([]);
     } catch (e) {
@@ -292,11 +300,20 @@ export default function Page() {
                 {p.categorie}
                 {p.poids ? ` • ${p.poids}` : ""}
               </div>
+
               <div className="row">
                 <div className="price">{euro(p.prix)} €</div>
-                <button className="btn" onClick={() => openDetails(p)}>
-                  ➕ / ℹ️
-                </button>
+
+                {/* ✅ si réappro : pas d'ajout */}
+                {p.active ? (
+                  <button className="btn" onClick={() => openDetails(p)}>
+                    ⚙️ Options
+                  </button>
+                ) : (
+                  <button className="btn disabled" onClick={() => openDetails(p)} disabled>
+                    🔒 Indisponible
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -329,21 +346,29 @@ export default function Page() {
                   <div className="muted">{euro(i.unitPrice)} € / unité</div>
                 </div>
                 <div className="qty">
-                  <button className="qbtn" onClick={() => dec(i.key)}>−</button>
+                  <button className="qbtn" onClick={() => dec(i.key)}>
+                    −
+                  </button>
                   <div className="qnum">{i.qty}</div>
-                  <button className="qbtn" onClick={() => inc(i.key)}>+</button>
+                  <button className="qbtn" onClick={() => inc(i.key)}>
+                    +
+                  </button>
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        <button className="checkout" disabled={!cart.length || isSubmitting} onClick={sendOrderToBot}>
+        <button
+          className="checkout"
+          disabled={!cart.length || isSubmitting}
+          onClick={sendOrderToBot}
+        >
           {isSubmitting ? "⏳ Envoi…" : "✅ Commander (Bitcoin / Transcash)"}
         </button>
       </div>
 
-      {/* ✅ FICHE PRODUIT (scroll OK) */}
+      {/* MODAL */}
       {openProduct && (
         <div className="modalBack" onClick={() => setOpenProduct(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -351,13 +376,14 @@ export default function Page() {
               <div>
                 <div className="modalTitle">{openProduct.nom}</div>
                 <div className="muted">
-                  {openProduct.active ? "En stock" : "En réappro"} • {euro(openProduct.prix)} €
+                  {openProduct.active ? "En stock" : "En réappro"}
                 </div>
               </div>
-              <button className="close" onClick={() => setOpenProduct(null)}>✕</button>
+              <button className="close" onClick={() => setOpenProduct(null)}>
+                ✕
+              </button>
             </div>
 
-            {/* ✅ Zone scrollable */}
             <div className="modalBody">
               {openProduct.photo ? (
                 <img
@@ -391,14 +417,12 @@ export default function Page() {
                           <button
                             key={c.label}
                             className={`choice ${active ? "active" : ""}`}
-                            onClick={() => setSelected((s) => ({ ...s, [opt.name]: c.label }))}
+                            onClick={() =>
+                              setSelected((s) => ({ ...s, [opt.name]: c.label }))
+                            }
                           >
-                            {c.label}
-                            {Number(c.priceDelta || 0) !== 0 && (
-                              <span className="delta">
-                                {c.priceDelta > 0 ? `+${euro(c.priceDelta)}` : euro(c.priceDelta)}€
-                              </span>
-                            )}
+                            <span className="cLabel">{c.label}</span>
+                            <span className="cPrice">{euro(c.price)} €</span>
                           </button>
                         );
                       })}
@@ -412,9 +436,19 @@ export default function Page() {
               <div className="finalPrice">
                 Prix: <b>{euro(calcPrice(openProduct, selected))} €</b>
               </div>
-              <button className="cta" onClick={() => addToCart(openProduct, selected)}>
-                ➕ Ajouter au panier
-              </button>
+
+              {openProduct.active ? (
+                <button
+                  className="cta"
+                  onClick={() => addToCart(openProduct, selected)}
+                >
+                  ➕ Ajouter au panier
+                </button>
+              ) : (
+                <button className="cta disabledCta" disabled>
+                  🔒 Indisponible (réappro)
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -453,6 +487,7 @@ export default function Page() {
         .row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
         .price{font-weight:900;}
         .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.06);color:var(--txt);padding:8px 10px;border-radius:12px;font-weight:800;}
+        .btn.disabled{opacity:.55;cursor:not-allowed;}
 
         .cart{position:fixed;left:0;right:0;bottom:0;background:rgba(11,11,15,.85);backdrop-filter:blur(10px);border-top:1px solid var(--stroke);padding:12px 14px;}
         .cartTop{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
@@ -469,7 +504,6 @@ export default function Page() {
         .checkout{width:100%;border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:12px 14px;border-radius:14px;cursor:pointer;}
         .checkout:disabled{opacity:.5;cursor:not-allowed;}
 
-        /* ✅ MODAL + SCROLL FIX */
         .modalBack{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:14px;}
         .modal{
           width:min(520px,100%);
@@ -477,10 +511,9 @@ export default function Page() {
           border:1px solid var(--stroke);
           border-radius:18px;
           overflow:hidden;
-
           display:flex;
           flex-direction:column;
-          max-height:86vh; /* ✅ limite */
+          max-height:86vh;
         }
         .modalHead{flex:0 0 auto;display:flex;justify-content:space-between;align-items:start;padding:12px;border-bottom:1px solid var(--stroke);}
         .modalTitle{font-weight:900;margin-bottom:4px;}
@@ -488,7 +521,7 @@ export default function Page() {
 
         .modalBody{
           flex:1 1 auto;
-          overflow:auto;               /* ✅ scroll */
+          overflow:auto;
           -webkit-overflow-scrolling:touch;
           overscroll-behavior:contain;
           padding:12px;
@@ -503,14 +536,30 @@ export default function Page() {
 
         .optBlock{border:1px solid var(--stroke);border-radius:14px;padding:10px;background:rgba(255,255,255,.03);}
         .optName{font-weight:900;margin-bottom:8px;}
-        .choices{display:flex;flex-wrap:wrap;gap:8px;}
-        .choice{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--txt);padding:10px 12px;border-radius:14px;font-weight:900;display:flex;align-items:center;gap:8px;}
+        .choices{display:flex;flex-wrap:wrap;gap:10px;}
+
+        /* ✅ boutons plus clairs : label + PRIX TOTAL */
+        .choice{
+          border:1px solid var(--stroke);
+          background:rgba(255,255,255,.05);
+          color:var(--txt);
+          padding:12px 14px;
+          border-radius:18px;
+          font-weight:900;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap:12px;
+          min-width:140px;
+        }
         .choice.active{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.5);}
-        .delta{opacity:.85;font-size:12px;}
+        .cLabel{font-size:16px;}
+        .cPrice{opacity:.9;font-size:14px;}
 
         .modalFoot{flex:0 0 auto;padding:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;border-top:1px solid var(--stroke);}
         .finalPrice{font-weight:900;}
         .cta{border:none;background:#22c55e;color:#0b0b0f;font-weight:900;padding:10px 12px;border-radius:14px;cursor:pointer;}
+        .cta.disabledCta{opacity:.55;cursor:not-allowed;}
       `}</style>
     </div>
   );
